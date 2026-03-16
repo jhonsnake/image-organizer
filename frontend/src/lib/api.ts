@@ -79,6 +79,8 @@ export const api = {
   pauseJob: (id: number) => request<{ status: string }>(`/api/jobs/${id}/pause`, { method: 'POST' }),
   resumeJob: (id: number) => request<{ status: string }>(`/api/jobs/${id}/resume`, { method: 'POST' }),
   stopJob: (id: number) => request<{ status: string }>(`/api/jobs/${id}/stop`, { method: 'POST' }),
+  deleteJob: (id: number) => request<{ deleted: boolean }>(`/api/jobs/${id}`, { method: 'DELETE' }),
+  clearJobs: () => request<{ deleted: number }>('/api/jobs/', { method: 'DELETE' }),
 
   // ── Review ──
   getReviewPhotos: (jobId: number, page = 1, pageSize = 50, minConf = 0, maxConf = 1) =>

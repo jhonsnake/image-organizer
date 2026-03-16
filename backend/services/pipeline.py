@@ -146,6 +146,10 @@ class PipelineRunner:
 
         # Bulk insert photo records
         for i, f in enumerate(files):
+            await self._wait_if_paused()
+            if self._cancelled:
+                return
+
             photo = Photo(
                 job_id=job.id,
                 path=f["path"],
@@ -157,6 +161,7 @@ class PipelineRunner:
 
             if i % 500 == 0:
                 await db.flush()
+                await self._persist_stage_progress(db, job, i, len(files))
                 await self._emit("progress", {
                     "stage": "scanning",
                     "current": i,

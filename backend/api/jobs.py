@@ -171,15 +171,54 @@ async def get_job_stats(job_id: int, db: AsyncSession = Depends(get_db)):
 @router.post("/{job_id}/pause")
 async def pause_job(job_id: int, db: AsyncSession = Depends(get_db)):
     """Pause a running job."""
-    runner = _active_runners.get(job_id)
-    if not runner:
-        raise HTTPException(status_code=404, detail="No hay runner activo para este job")
-
-    runner.pause()
     job = await db.get(Job, job_id)
+    if not job or job.status != JobStatus.RUNNING:
+        raise HTTPException(status_code=400, detail="Job no esta corriendo")
+
+    runner = _active_runners.get(job_id)
+    if runner:
+        runner.pause()
+
     job.status = JobStatus.PAUSED
     await db.commit()
     return {"status": "paused"}
+
+
+@router.delete("/{job_id}")
+async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    """Delete a job and its photos from history."""
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    if job.status in (JobStatus.RUNNING, JobStatus.PENDING):
+        raise HTTPException(status_code=400, detail="No se puede eliminar un job activo")
+
+    # Delete photos first, then job
+    await db.execute(select(Photo).where(Photo.job_id == job_id))
+    photos = (await db.execute(select(Photo).where(Photo.job_id == job_id))).scalars().all()
+    for p in photos:
+        await db.delete(p)
+    await db.delete(job)
+    await db.commit()
+    return {"deleted": True}
+
+
+@router.delete("/")
+async def clear_jobs(db: AsyncSession = Depends(get_db)):
+    """Delete all non-active jobs from history."""
+    result = await db.execute(
+        select(Job).where(Job.status.notin_([JobStatus.RUNNING, JobStatus.PENDING]))
+    )
+    jobs = list(result.scalars().all())
+    count = 0
+    for job in jobs:
+        photos = (await db.execute(select(Photo).where(Photo.job_id == job.id))).scalars().all()
+        for p in photos:
+            await db.delete(p)
+        await db.delete(job)
+        count += 1
+    await db.commit()
+    return {"deleted": count}
 
 
 @router.post("/{job_id}/stop")

@@ -1,22 +1,53 @@
 import { useState, useEffect } from 'react';
-import { Clock, HardDrive, CheckCircle2, XCircle, Pause } from 'lucide-react';
+import { Clock, HardDrive, CheckCircle2, XCircle, Pause, Trash2 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Job } from '../lib/api';
 
 export default function HistoryPage() {
   const [jobs, setJobs] = useState<Job[]>([]);
 
+  const loadJobs = () => api.listJobs(undefined, 50).then(setJobs).catch(() => {});
+
   useEffect(() => {
-    api.listJobs(undefined, 50).then(setJobs).catch(() => {});
+    loadJobs();
   }, []);
+
+  const handleDelete = async (id: number) => {
+    try {
+      await api.deleteJob(id);
+      setJobs((prev) => prev.filter((j) => j.id !== id));
+    } catch (e) {
+      console.error('Delete failed:', e);
+    }
+  };
+
+  const handleClear = async () => {
+    try {
+      await api.clearJobs();
+      loadJobs();
+    } catch (e) {
+      console.error('Clear failed:', e);
+    }
+  };
 
   const totalSaved = jobs.reduce((a, j) => a + j.space_saved_bytes, 0);
   const totalProcessed = jobs.reduce((a, j) => a + j.total_files, 0);
   const completedJobs = jobs.filter((j) => j.status === 'completed').length;
+  const canClear = jobs.some((j) => j.status !== 'running' && j.status !== 'pending');
 
   return (
     <div className="space-y-6">
-      <h1 className="text-2xl font-bold">Historial</h1>
+      <div className="flex items-center justify-between">
+        <h1 className="text-2xl font-bold">Historial</h1>
+        {canClear && (
+          <button
+            onClick={handleClear}
+            className="btn-secondary flex items-center gap-1.5 text-red-400 hover:text-red-300 text-sm"
+          >
+            <Trash2 className="w-4 h-4" /> Limpiar historial
+          </button>
+        )}
+      </div>
 
       {/* Summary cards */}
       <div className="grid grid-cols-3 gap-4">
@@ -55,25 +86,40 @@ export default function HistoryPage() {
               <th className="text-right p-3">Espacio</th>
               <th className="text-right p-3">Fecha</th>
               <th className="text-right p-3">Duracion</th>
+              <th className="text-right p-3"></th>
             </tr>
           </thead>
           <tbody>
-            {jobs.map((job) => (
-              <tr key={job.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
-                <td className="p-3 text-gray-400">#{job.id}</td>
-                <td className="p-3">{job.nas_user}</td>
-                <td className="p-3">
-                  <StatusBadge status={job.status} />
-                </td>
-                <td className="p-3 text-right text-gray-400">{job.total_files.toLocaleString()}</td>
-                <td className="p-3 text-right text-red-400">{job.trash_count}</td>
-                <td className="p-3 text-right text-yellow-400">{job.review_count}</td>
-                <td className="p-3 text-right text-blue-400">{job.documents_count}</td>
-                <td className="p-3 text-right text-green-400">{formatBytes(job.space_saved_bytes)}</td>
-                <td className="p-3 text-right text-gray-500">{formatDate(job.created_at)}</td>
-                <td className="p-3 text-right text-gray-500">{formatDuration(job.started_at, job.completed_at)}</td>
-              </tr>
-            ))}
+            {jobs.map((job) => {
+              const canDelete = job.status !== 'running' && job.status !== 'pending';
+              return (
+                <tr key={job.id} className="border-b border-gray-800/50 hover:bg-gray-800/30">
+                  <td className="p-3 text-gray-400">#{job.id}</td>
+                  <td className="p-3">{job.nas_user}</td>
+                  <td className="p-3">
+                    <StatusBadge status={job.status} />
+                  </td>
+                  <td className="p-3 text-right text-gray-400">{job.total_files.toLocaleString()}</td>
+                  <td className="p-3 text-right text-red-400">{job.trash_count}</td>
+                  <td className="p-3 text-right text-yellow-400">{job.review_count}</td>
+                  <td className="p-3 text-right text-blue-400">{job.documents_count}</td>
+                  <td className="p-3 text-right text-green-400">{formatBytes(job.space_saved_bytes)}</td>
+                  <td className="p-3 text-right text-gray-500">{formatDate(job.created_at)}</td>
+                  <td className="p-3 text-right text-gray-500">{formatDuration(job.started_at, job.completed_at)}</td>
+                  <td className="p-3 text-right">
+                    {canDelete && (
+                      <button
+                        onClick={() => handleDelete(job.id)}
+                        className="text-gray-600 hover:text-red-400 transition-colors"
+                        title="Eliminar"
+                      >
+                        <Trash2 className="w-4 h-4" />
+                      </button>
+                    )}
+                  </td>
+                </tr>
+              );
+            })}
           </tbody>
         </table>
         {jobs.length === 0 && (

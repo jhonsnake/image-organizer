@@ -188,20 +188,28 @@ export default function Progress({ latestMsg, messages }: Props) {
 
   const handlePauseResume = async () => {
     if (!activeJob) return;
-    if (activeJob.status === 'running') {
-      await api.pauseJob(activeJob.id);
-    } else {
-      await api.resumeJob(activeJob.id);
+    try {
+      if (activeJob.status === 'running') {
+        await api.pauseJob(activeJob.id);
+      } else {
+        await api.resumeJob(activeJob.id);
+      }
+      const updated = await api.getJob(activeJob.id);
+      setActiveJob(updated);
+    } catch (e) {
+      console.error('Pause/Resume failed:', e);
     }
-    const updated = await api.getJob(activeJob.id);
-    setActiveJob(updated);
   };
 
   const handleStop = async () => {
     if (!activeJob) return;
-    await api.stopJob(activeJob.id);
-    const updated = await api.getJob(activeJob.id);
-    setActiveJob(updated);
+    try {
+      await api.stopJob(activeJob.id);
+      const updated = await api.getJob(activeJob.id);
+      setActiveJob(updated);
+    } catch (e) {
+      console.error('Stop failed:', e);
+    }
   };
 
   if (!activeJob) {
