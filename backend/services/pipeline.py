@@ -113,8 +113,12 @@ class PipelineRunner:
                         return
 
                     await self._stage_execute(db, job)
+                    if self._cancelled:
+                        return
 
-                # Done
+                # Done — re-check cancelled to avoid overwriting a stop
+                if self._cancelled:
+                    return
                 job.status = JobStatus.COMPLETED
                 job.current_stage = PipelineStage.DONE
                 job.completed_at = datetime.utcnow()
