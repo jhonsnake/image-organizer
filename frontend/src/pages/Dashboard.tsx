@@ -2,9 +2,12 @@ import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
 import {
   Save, Play, RefreshCw, ChevronRight, AlertCircle, CheckCircle2, Loader2,
+  Monitor, Cloud, Zap, XCircle,
 } from 'lucide-react';
 import { api } from '../lib/api';
-import type { AppConfig, NasUser, LlmInfo } from '../lib/api';
+import type { AppConfig, NasUser, LlmInfo, DetectedProvider } from '../lib/api';
+
+type VisionMode = 'direct' | 'providers';
 
 const defaults: Omit<AppConfig, 'id'> = {
   nas_user: '',
@@ -31,12 +34,16 @@ export default function Dashboard() {
   const [saved, setSaved] = useState(false);
   const [showAdvanced, setShowAdvanced] = useState(false);
 
-  // Load users on mount
+  // V2: vision mode
+  const [visionMode, setVisionMode] = useState<VisionMode>('direct');
+  const [detectedProviders, setDetectedProviders] = useState<DetectedProvider[] | null>(null);
+  const [detecting, setDetecting] = useState(false);
+  const [recommended, setRecommended] = useState<DetectedProvider | null>(null);
+
   useEffect(() => {
     api.getUsers().then(setUsers).catch(() => {});
   }, []);
 
-  // Load config when user changes
   useEffect(() => {
     if (!config.nas_user) return;
     api.getConfig(config.nas_user).then((cfg) => {
@@ -52,7 +59,7 @@ export default function Dashboard() {
     });
   }, [config.nas_user, users]);
 
-  // Check LLM when URL changes
+  // Check direct LLM
   const checkLlm = async () => {
     setLlmLoading(true);
     setLlmInfo(null);
@@ -69,11 +76,30 @@ export default function Dashboard() {
   };
 
   useEffect(() => {
-    if (config.llm_url) {
+    if (visionMode === 'direct' && config.llm_url) {
       const t = setTimeout(checkLlm, 500);
       return () => clearTimeout(t);
     }
-  }, [config.llm_url]);
+  }, [config.llm_url, visionMode]);
+
+  // V2: detect providers
+  const detectProviders = async () => {
+    setDetecting(true);
+    try {
+      const result = await api.detectProviders();
+      setDetectedProviders(result.providers);
+      setRecommended(result.recommended);
+    } catch {
+      setDetectedProviders([]);
+    }
+    setDetecting(false);
+  };
+
+  useEffect(() => {
+    if (visionMode === 'providers') {
+      detectProviders();
+    }
+  }, [visionMode]);
 
   const handleSave = async () => {
     setSaving(true);
@@ -100,6 +126,7 @@ export default function Dashboard() {
         source_dir: config.source_dir,
         llm_url: config.llm_url,
         llm_model: config.llm_model,
+        use_providers: visionMode === 'providers',
         blur_threshold: config.blur_threshold,
         hash_threshold: config.hash_threshold,
         confidence_threshold: config.confidence_threshold,
@@ -114,6 +141,10 @@ export default function Dashboard() {
   const update = (key: keyof AppConfig, value: string | number) =>
     setConfig((p) => ({ ...p, [key]: value }));
 
+  const anyProviderAvailable = detectedProviders?.some((p) => p.available) ?? false;
+  const canStart = config.nas_user && config.source_dir &&
+    (visionMode === 'direct' || anyProviderAvailable);
+
   return (
     <div className="max-w-2xl mx-auto space-y-6">
       <h1 className="text-2xl font-bold">Configurar Limpieza</h1>
@@ -127,9 +158,7 @@ export default function Dashboard() {
         >
           <option value="">Selecciona usuario...</option>
           {users.map((u) => (
-            <option key={u.username} value={u.username}>
-              {u.username}
-            </option>
+            <option key={u.username} value={u.username}>{u.username}</option>
           ))}
         </select>
       </Section>
@@ -146,49 +175,134 @@ export default function Dashboard() {
         </Section>
       )}
 
-      {/* LLM Config */}
+      {/* Vision mode selector */}
       <Section title="Modelo de IA">
-        <div className="space-y-3">
-          <div>
-            <label className="label">URL del servidor LLM</label>
-            <div className="flex gap-2">
-              <input
-                className="input flex-1"
-                value={config.llm_url}
-                onChange={(e) => update('llm_url', e.target.value)}
-                placeholder="http://100.127.43.94:1234/v1"
-              />
-              <button onClick={checkLlm} className="btn-secondary" disabled={llmLoading}>
-                {llmLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
-              </button>
-            </div>
-            {llmInfo && (
-              <div className={`flex items-center gap-1.5 mt-1.5 text-xs ${llmInfo.available ? 'text-green-400' : 'text-red-400'}`}>
-                {llmInfo.available ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
-                {llmInfo.available ? `Conectado - ${llmInfo.models.length} modelos` : 'No disponible'}
+        <div className="space-y-4">
+          {/* Mode toggle */}
+          <div className="flex gap-2">
+            <button
+              onClick={() => setVisionMode('direct')}
+              className={`flex-1 flex items-center gap-2 p-3 rounded-lg border text-sm transition-all ${
+                visionMode === 'direct'
+                  ? 'border-purple-500 bg-purple-500/10 text-purple-300'
+                  : 'border-gray-700 text-gray-400 hover:border-gray-600'
+              }`}
+            >
+              <Monitor className="w-4 h-4" />
+              <div className="text-left">
+                <div className="font-medium">Conexion directa</div>
+                <div className="text-xs opacity-70">URL de un servidor local (LM Studio, Ollama...)</div>
               </div>
-            )}
+            </button>
+            <button
+              onClick={() => setVisionMode('providers')}
+              className={`flex-1 flex items-center gap-2 p-3 rounded-lg border text-sm transition-all ${
+                visionMode === 'providers'
+                  ? 'border-purple-500 bg-purple-500/10 text-purple-300'
+                  : 'border-gray-700 text-gray-400 hover:border-gray-600'
+              }`}
+            >
+              <Cloud className="w-4 h-4" />
+              <div className="text-left">
+                <div className="font-medium">Providers con fallback</div>
+                <div className="text-xs opacity-70">Local + cloud, usa el mejor disponible</div>
+              </div>
+            </button>
           </div>
-          <div>
-            <label className="label">Modelo</label>
-            {llmInfo?.models.length ? (
-              <select
-                className="input"
-                value={config.llm_model}
-                onChange={(e) => update('llm_model', e.target.value)}
-              >
-                {llmInfo.models.map((m) => (
-                  <option key={m} value={m}>{m}</option>
-                ))}
-              </select>
-            ) : (
-              <input
-                className="input"
-                value={config.llm_model}
-                onChange={(e) => update('llm_model', e.target.value)}
-              />
-            )}
-          </div>
+
+          {/* Direct mode */}
+          {visionMode === 'direct' && (
+            <div className="space-y-3">
+              <div>
+                <label className="label">URL del servidor LLM</label>
+                <div className="flex gap-2">
+                  <input
+                    className="input flex-1"
+                    value={config.llm_url}
+                    onChange={(e) => update('llm_url', e.target.value)}
+                    placeholder="http://100.127.43.94:1234/v1"
+                  />
+                  <button onClick={checkLlm} className="btn-secondary" disabled={llmLoading}>
+                    {llmLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <RefreshCw className="w-4 h-4" />}
+                  </button>
+                </div>
+                {llmInfo && (
+                  <div className={`flex items-center gap-1.5 mt-1.5 text-xs ${llmInfo.available ? 'text-green-400' : 'text-red-400'}`}>
+                    {llmInfo.available ? <CheckCircle2 className="w-3.5 h-3.5" /> : <AlertCircle className="w-3.5 h-3.5" />}
+                    {llmInfo.available ? `Conectado - ${llmInfo.models.length} modelos` : 'No disponible'}
+                  </div>
+                )}
+              </div>
+              <div>
+                <label className="label">Modelo</label>
+                {llmInfo?.models.length ? (
+                  <select className="input" value={config.llm_model} onChange={(e) => update('llm_model', e.target.value)}>
+                    {llmInfo.models.map((m) => <option key={m} value={m}>{m}</option>)}
+                  </select>
+                ) : (
+                  <input className="input" value={config.llm_model} onChange={(e) => update('llm_model', e.target.value)} />
+                )}
+              </div>
+            </div>
+          )}
+
+          {/* Providers mode */}
+          {visionMode === 'providers' && (
+            <div className="space-y-3">
+              <div className="flex items-center justify-between">
+                <span className="text-xs text-gray-500">
+                  Se usara el provider de mayor prioridad que este disponible
+                </span>
+                <button onClick={detectProviders} disabled={detecting} className="btn-secondary text-xs flex items-center gap-1">
+                  {detecting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Zap className="w-3.5 h-3.5" />}
+                  Verificar
+                </button>
+              </div>
+
+              {detectedProviders === null && !detecting && (
+                <div className="text-center py-6 text-gray-600 text-sm">
+                  Verificando providers...
+                </div>
+              )}
+
+              {detectedProviders?.length === 0 && (
+                <div className="bg-yellow-500/10 border border-yellow-500/20 rounded-lg p-3 text-sm text-yellow-400 flex items-center gap-2">
+                  <AlertCircle className="w-4 h-4 shrink-0" />
+                  No hay providers configurados. Ve a la pagina de Providers para agregar uno.
+                </div>
+              )}
+
+              {detectedProviders && detectedProviders.length > 0 && (
+                <div className="space-y-2">
+                  {detectedProviders.map((p) => (
+                    <div
+                      key={p.id}
+                      className={`flex items-center gap-3 p-2.5 rounded-lg border text-sm ${
+                        p.available ? 'border-green-500/30 bg-green-500/5' : 'border-gray-800 bg-gray-900/50 opacity-50'
+                      }`}
+                    >
+                      {p.available
+                        ? <CheckCircle2 className="w-4 h-4 text-green-400 shrink-0" />
+                        : <XCircle className="w-4 h-4 text-red-400 shrink-0" />
+                      }
+                      <div className="flex-1 min-w-0">
+                        <div className="font-medium text-gray-200 truncate">{p.name}</div>
+                        <div className="text-xs text-gray-500">{p.type} · Prioridad #{p.priority}</div>
+                      </div>
+                      {p.available && p.models.length > 0 && (
+                        <span className="text-xs text-gray-500">{p.models.length} modelos</span>
+                      )}
+                      {recommended?.id === p.id && (
+                        <span className="text-[10px] bg-green-500/20 text-green-400 px-1.5 py-0.5 rounded-full shrink-0">
+                          Se usara este
+                        </span>
+                      )}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          )}
         </div>
       </Section>
 
@@ -223,19 +337,11 @@ export default function Dashboard() {
 
       {/* Actions */}
       <div className="flex gap-3 pt-2">
-        <button
-          onClick={handleSave}
-          disabled={!config.nas_user || saving}
-          className="btn-secondary flex items-center gap-2"
-        >
+        <button onClick={handleSave} disabled={!config.nas_user || saving} className="btn-secondary flex items-center gap-2">
           {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
           {saved ? 'Guardado!' : 'Guardar config'}
         </button>
-        <button
-          onClick={handleStart}
-          disabled={!config.nas_user || !config.source_dir || starting}
-          className="btn-primary flex items-center gap-2"
-        >
+        <button onClick={handleStart} disabled={!canStart || starting} className="btn-primary flex items-center gap-2">
           {starting ? <Loader2 className="w-4 h-4 animate-spin" /> : <Play className="w-4 h-4" />}
           Iniciar limpieza
         </button>
@@ -261,13 +367,7 @@ function Field({
   return (
     <div>
       <label className="label">{label}</label>
-      <input
-        type="number"
-        className="input"
-        value={value}
-        step={step}
-        onChange={(e) => onChange(Number(e.target.value))}
-      />
+      <input type="number" className="input" value={value} step={step} onChange={(e) => onChange(Number(e.target.value))} />
     </div>
   );
 }

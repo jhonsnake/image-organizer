@@ -64,6 +64,7 @@ export const api = {
     source_dir: string;
     llm_url: string;
     llm_model: string;
+    use_providers?: boolean;
     blur_threshold: number;
     hash_threshold: number;
     confidence_threshold: number;

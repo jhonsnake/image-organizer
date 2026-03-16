@@ -22,8 +22,11 @@ _active_runners: dict[int, PipelineRunner] = {}
 class CreateJobRequest(BaseModel):
     nas_user: str
     source_dir: str
+    # V1 mode: direct URL + model
     llm_url: str = settings.default_llm_url
     llm_model: str = settings.default_model
+    # V2 mode: use provider registry with fallback
+    use_providers: bool = False  # If true, ignore llm_url/llm_model and use registry
     blur_threshold: float = settings.default_blur_threshold
     hash_threshold: int = settings.default_hash_threshold
     confidence_threshold: float = settings.default_confidence_threshold
@@ -74,6 +77,7 @@ async def create_job(req: CreateJobRequest, db: AsyncSession = Depends(get_db)):
         source_dir=req.source_dir,
         llm_url=req.llm_url,
         llm_model=req.llm_model,
+        use_providers=req.use_providers,
         blur_threshold=req.blur_threshold,
         hash_threshold=req.hash_threshold,
         confidence_threshold=req.confidence_threshold,

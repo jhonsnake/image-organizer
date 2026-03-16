@@ -16,7 +16,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
 from models import (
-    Job, Photo, JobStatus, PipelineStage,
+    Job, Photo, VisionProviderConfig, JobStatus, PipelineStage,
     PhotoAction, PhotoReason, async_session,
 )
 from services.scanner import (
@@ -328,17 +328,56 @@ class PipelineRunner:
             await self._emit("stage_complete", {"stage": "vision", "classified": 0, "total": 0})
             return
 
-        llm_url = job.llm_url or settings.default_llm_url
-        llm_model = job.llm_model or settings.default_model
         confidence_threshold = job.confidence_threshold or settings.default_confidence_threshold
 
-        provider = OpenAICompatibleProvider(base_url=llm_url, model=llm_model)
+        # Resolve provider: either from registry (V2) or direct URL (V1)
+        provider = None
+        provider_label = ""
 
-        available = await provider.is_available()
-        if not available:
+        if job.use_providers:
+            # V2: try providers in priority order
+            prov_result = await db.execute(
+                select(VisionProviderConfig)
+                .where(VisionProviderConfig.enabled == True)
+                .order_by(VisionProviderConfig.priority)
+            )
+            prov_configs = list(prov_result.scalars().all())
+
+            for pc in prov_configs:
+                candidate = create_provider(
+                    provider_type=pc.provider_type,
+                    base_url=pc.base_url,
+                    model=pc.model,
+                    api_key=pc.api_key,
+                )
+                if await candidate.is_available():
+                    provider = candidate
+                    provider_label = f"{pc.name} ({pc.model or pc.provider_type})"
+                    await self._emit("stage", {
+                        "stage": "vision",
+                        "message": f"Usando provider: {provider_label}",
+                    })
+                    break
+                else:
+                    await candidate.close()
+                    await self._emit("stage", {
+                        "stage": "vision",
+                        "message": f"Provider '{pc.name}' no disponible, probando siguiente...",
+                    })
+        else:
+            # V1: direct URL + model
+            llm_url = job.llm_url or settings.default_llm_url
+            llm_model = job.llm_model or settings.default_model
+            provider = OpenAICompatibleProvider(base_url=llm_url, model=llm_model)
+            provider_label = llm_model
+            if not await provider.is_available():
+                await provider.close()
+                provider = None
+
+        if not provider:
             await self._emit("stage", {
                 "stage": "vision",
-                "message": f"LLM no disponible en {llm_url}. Enviando restantes a review.",
+                "message": "Ningun provider de vision disponible. Enviando restantes a review.",
             })
             for photo in photos:
                 photo.action = PhotoAction.REVIEW
@@ -346,12 +385,11 @@ class PipelineRunner:
                 photo.confidence = 0.0
                 photo.stage_decided = 4
             await db.commit()
-            await provider.close()
             return
 
         await self._emit("stage", {
             "stage": "vision",
-            "message": f"Clasificando {len(photos)} imágenes con {llm_model}...",
+            "message": f"Clasificando {len(photos)} imagenes con {provider_label}...",
         })
 
         classified = 0

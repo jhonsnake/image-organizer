@@ -110,6 +110,7 @@ class Job(Base):
     # Config snapshot
     llm_url = Column(String(512))
     llm_model = Column(String(255))
+    use_providers = Column(Boolean, default=False)  # V2: use provider registry
     blur_threshold = Column(Float)
     hash_threshold = Column(Integer)
     confidence_threshold = Column(Float)
