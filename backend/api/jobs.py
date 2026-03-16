@@ -44,6 +44,8 @@ class JobResponse(BaseModel):
     created_at: datetime
     started_at: Optional[datetime]
     completed_at: Optional[datetime]
+    stage_progress: int = 0
+    stage_total: int = 0
     error_message: Optional[str]
 
     class Config:
@@ -180,6 +182,25 @@ async def pause_job(job_id: int, db: AsyncSession = Depends(get_db)):
     return {"status": "paused"}
 
 
+@router.post("/{job_id}/stop")
+async def stop_job(job_id: int, db: AsyncSession = Depends(get_db)):
+    """Stop a job permanently (cancel, not pause)."""
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    runner = _active_runners.get(job_id)
+    if runner:
+        runner.cancel()
+
+    job.status = JobStatus.FAILED
+    job.error_message = "Detenido manualmente por el usuario"
+    job.completed_at = datetime.utcnow()
+    await db.commit()
+    _active_runners.pop(job_id, None)
+    return {"status": "stopped"}
+
+
 @router.post("/{job_id}/resume")
 async def resume_job(job_id: int, db: AsyncSession = Depends(get_db)):
     """Resume a paused job."""
@@ -191,9 +212,9 @@ async def resume_job(job_id: int, db: AsyncSession = Depends(get_db)):
         await db.commit()
         return {"status": "resumed"}
 
-    # Runner lost (e.g., server restarted) — create new one
+    # Runner lost (e.g., server restarted or crashed) — create new one
     job = await db.get(Job, job_id)
-    if not job or job.status not in (JobStatus.PAUSED, JobStatus.FAILED):
+    if not job or job.status not in (JobStatus.PAUSED, JobStatus.FAILED, JobStatus.RUNNING):
         raise HTTPException(status_code=400, detail="Job no se puede reanudar")
 
     from main import broadcast_progress

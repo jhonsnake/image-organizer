@@ -1,5 +1,5 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Pause, Play, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { Pause, Play, Square, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { api } from '../lib/api';
 import type { Job, JobStats } from '../lib/api';
@@ -52,12 +52,30 @@ export default function Progress({ latestMsg, messages }: Props) {
   const [progress, setProgress] = useState({ stage: '', current: 0, total: 0, message: '' });
   const [liveCounts, setLiveCounts] = useState<Counts | null>(null);
 
-  // Load active/recent jobs
+  // Load active/recent jobs and hydrate progress from persisted data
   useEffect(() => {
     api.listJobs(undefined, 5).then((j) => {
       const running = j.find((x) => x.status === 'running' || x.status === 'paused');
-      if (running) setActiveJob(running);
-      else if (j.length) setActiveJob(j[0]);
+      const job = running || j[0];
+      if (job) {
+        setActiveJob(job);
+        // Hydrate progress bar from persisted DB values
+        if (job.status === 'running' || job.status === 'paused') {
+          setProgress({
+            stage: job.current_stage,
+            current: job.stage_progress || 0,
+            total: job.stage_total || 0,
+            message: '',
+          });
+          // Hydrate live counts from job counters
+          setLiveCounts({
+            keep: job.kept_count,
+            trash: job.trash_count,
+            review: job.review_count,
+            documents: job.documents_count,
+          });
+        }
+      }
     });
   }, []);
 
@@ -179,6 +197,13 @@ export default function Progress({ latestMsg, messages }: Props) {
     setActiveJob(updated);
   };
 
+  const handleStop = async () => {
+    if (!activeJob) return;
+    await api.stopJob(activeJob.id);
+    const updated = await api.getJob(activeJob.id);
+    setActiveJob(updated);
+  };
+
   if (!activeJob) {
     return (
       <div className="text-center py-20 text-gray-500">
@@ -188,9 +213,23 @@ export default function Progress({ latestMsg, messages }: Props) {
   }
 
   const isActive = activeJob.status === 'running' || activeJob.status === 'paused';
+  const wasInterrupted = activeJob.status === 'paused' && activeJob.error_message?.includes('Interrumpido');
 
   return (
     <div className="space-y-6">
+      {/* Interrupted banner */}
+      {wasInterrupted && (
+        <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 flex items-center justify-between">
+          <div className="flex items-center gap-2 text-yellow-300">
+            <AlertTriangle className="w-5 h-5" />
+            <span>Este job fue interrumpido por un reinicio del servidor.</span>
+          </div>
+          <button onClick={handlePauseResume} className="btn-secondary flex items-center gap-1.5">
+            <Play className="w-4 h-4" /> Reanudar
+          </button>
+        </div>
+      )}
+
       {/* Header */}
       <div className="flex items-center justify-between">
         <div>
@@ -205,13 +244,18 @@ export default function Progress({ latestMsg, messages }: Props) {
         <div className="flex items-center gap-3">
           <StatusBadge status={activeJob.status} />
           {isActive && (
-            <button onClick={handlePauseResume} className="btn-secondary flex items-center gap-1.5">
-              {activeJob.status === 'running' ? (
-                <><Pause className="w-4 h-4" /> Pausar</>
-              ) : (
-                <><Play className="w-4 h-4" /> Reanudar</>
-              )}
-            </button>
+            <>
+              <button onClick={handlePauseResume} className="btn-secondary flex items-center gap-1.5">
+                {activeJob.status === 'running' ? (
+                  <><Pause className="w-4 h-4" /> Pausar</>
+                ) : (
+                  <><Play className="w-4 h-4" /> Reanudar</>
+                )}
+              </button>
+              <button onClick={handleStop} className="btn-secondary flex items-center gap-1.5 text-red-400 hover:text-red-300">
+                <Square className="w-4 h-4" /> Detener
+              </button>
+            </>
           )}
         </div>
       </div>

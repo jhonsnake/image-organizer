@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from models import init_db, async_session, VisionProviderConfig, AppConfig
+from models import init_db, async_session, VisionProviderConfig, AppConfig, Job, JobStatus
 
 logging.basicConfig(
     level=logging.INFO,
@@ -93,6 +93,23 @@ async def _auto_migrate_providers():
         await db.commit()
 
 
+async def _recover_crashed_jobs():
+    """Mark any RUNNING jobs as PAUSED on startup — they crashed with the server."""
+    from sqlalchemy import select
+    async with async_session() as db:
+        result = await db.execute(
+            select(Job).where(Job.status == JobStatus.RUNNING)
+        )
+        crashed = list(result.scalars().all())
+        for job in crashed:
+            job.status = JobStatus.PAUSED
+            job.error_message = "Interrumpido por reinicio del servidor"
+            logger.warning(f"Job {job.id} was RUNNING at startup — marked as PAUSED")
+        if crashed:
+            await db.commit()
+            logger.info(f"Recovered {len(crashed)} crashed job(s)")
+
+
 # ── App lifecycle ──
 
 @asynccontextmanager
@@ -110,6 +127,9 @@ async def lifespan(app: FastAPI):
 
     # Auto-migrate: if AppConfig has llm_url but no providers exist, create one
     await _auto_migrate_providers()
+
+    # Auto-pause jobs that were RUNNING when the server crashed/restarted
+    await _recover_crashed_jobs()
 
     logger.info(f"Server running on http://{settings.host}:{settings.port}")
 

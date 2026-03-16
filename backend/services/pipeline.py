@@ -161,14 +161,25 @@ class PipelineRunner:
 
         await db.commit()
 
+    async def _persist_stage_progress(self, db: AsyncSession, job: Job, current: int, total: int):
+        """Persist stage progress to DB for resume hydration."""
+        job.stage_progress = current
+        job.stage_total = total
+        await db.flush()
+
     async def _stage_metadata(self, db: AsyncSession, job: Job):
         await self._wait_if_paused()
         job.current_stage = PipelineStage.METADATA
         await db.commit()
         await self._emit("stage", {"stage": "metadata", "message": "Analizando metadata..."})
 
+        # Skip photos already processed by metadata (stage_decided >= 1)
         result = await db.execute(
-            select(Photo).where(Photo.job_id == job.id, Photo.action == PhotoAction.KEEP)
+            select(Photo).where(
+                Photo.job_id == job.id,
+                Photo.action == PhotoAction.KEEP,
+                Photo.stage_decided < 1,
+            )
         )
         photos = list(result.scalars().all())
 
@@ -209,6 +220,7 @@ class PipelineRunner:
 
             if i % 100 == 0:
                 await db.flush()
+                await self._persist_stage_progress(db, job, i, len(photos))
                 await self._emit_with_counts(db, "progress", {
                     "stage": "metadata",
                     "current": i,
@@ -217,6 +229,8 @@ class PipelineRunner:
                 })
 
         job.processed_files = classified
+        job.stage_progress = 0
+        job.stage_total = 0
         await db.commit()
         await self._emit_with_counts(db, "stage_complete", {
             "stage": "metadata", "classified": classified, "total": len(photos),
@@ -233,8 +247,9 @@ class PipelineRunner:
         )
         photos = list(result.scalars().all())
 
-        # Compute hashes
-        for i, photo in enumerate(photos):
+        # Compute hashes — skip photos that already have a phash (resume)
+        need_hash = [p for p in photos if not p.phash]
+        for i, photo in enumerate(need_hash):
             await self._wait_if_paused()
             if self._cancelled:
                 return
@@ -243,10 +258,11 @@ class PipelineRunner:
                 photo.phash = h
 
             if i % 50 == 0:
+                await self._persist_stage_progress(db, job, i, len(need_hash))
                 await self._emit("progress", {
                     "stage": "dedup",
                     "current": i,
-                    "total": len(photos),
+                    "total": len(need_hash),
                     "substage": "hashing",
                 })
 
@@ -269,6 +285,8 @@ class PipelineRunner:
                 photos[idx].duplicate_group = group_id
                 dup_count += 1
 
+        job.stage_progress = 0
+        job.stage_total = 0
         await db.commit()
         await self._emit_with_counts(db, "stage_complete", {
             "stage": "dedup", "groups": len(groups), "duplicates": dup_count,
@@ -280,8 +298,13 @@ class PipelineRunner:
         await db.commit()
         await self._emit("stage", {"stage": "quality", "message": "Analizando calidad..."})
 
+        # Skip photos already processed by quality (stage_decided >= 3)
         result = await db.execute(
-            select(Photo).where(Photo.job_id == job.id, Photo.action == PhotoAction.KEEP)
+            select(Photo).where(
+                Photo.job_id == job.id,
+                Photo.action == PhotoAction.KEEP,
+                Photo.stage_decided < 3,
+            )
         )
         photos = list(result.scalars().all())
 
@@ -313,6 +336,7 @@ class PipelineRunner:
 
             if i % 50 == 0:
                 await db.flush()
+                await self._persist_stage_progress(db, job, i, len(photos))
                 await self._emit_with_counts(db, "progress", {
                     "stage": "quality",
                     "current": i,
@@ -320,6 +344,8 @@ class PipelineRunner:
                     "classified": classified,
                 })
 
+        job.stage_progress = 0
+        job.stage_total = 0
         await db.commit()
         await self._emit_with_counts(db, "stage_complete", {
             "stage": "quality", "classified": classified, "total": len(photos),
@@ -330,11 +356,12 @@ class PipelineRunner:
         job.current_stage = PipelineStage.VISION
         await db.commit()
 
-        # Process both KEEP (unclassified) and REVIEW (low-confidence from quality stage)
+        # Process KEEP/REVIEW that haven't been through vision yet (stage_decided < 4)
         result = await db.execute(
             select(Photo).where(
                 Photo.job_id == job.id,
                 Photo.action.in_([PhotoAction.KEEP, PhotoAction.REVIEW]),
+                Photo.stage_decided < 4,
             )
         )
         photos = list(result.scalars().all())
@@ -456,6 +483,7 @@ class PipelineRunner:
 
             if i % 5 == 0:
                 await db.flush()
+                await self._persist_stage_progress(db, job, i, len(photos))
                 await self._emit_with_counts(db, "progress", {
                     "stage": "vision",
                     "current": i,
@@ -464,6 +492,8 @@ class PipelineRunner:
                 })
 
         await provider.close()
+        job.stage_progress = 0
+        job.stage_total = 0
         await db.commit()
         await self._emit_with_counts(db, "stage_complete", {
             "stage": "vision", "classified": classified, "total": len(photos),
@@ -543,6 +573,7 @@ class PipelineRunner:
 
             if i % 50 == 0:
                 await db.flush()
+                await self._persist_stage_progress(db, job, i, len(to_move))
                 await self._emit_with_counts(db, "progress", {
                     "stage": "executing",
                     "current": i,
@@ -551,6 +582,8 @@ class PipelineRunner:
                     "errors": errors,
                 })
 
+        job.stage_progress = 0
+        job.stage_total = 0
         await db.commit()
         await self._update_stats(db, job)
         await db.commit()

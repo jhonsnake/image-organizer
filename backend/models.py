@@ -115,6 +115,9 @@ class Job(Base):
     blur_threshold = Column(Float)
     hash_threshold = Column(Integer)
     confidence_threshold = Column(Float)
+    # Stage progress (persisted for resume)
+    stage_progress = Column(Integer, default=0)
+    stage_total = Column(Integer, default=0)
     # Timestamps
     created_at = Column(DateTime, default=datetime.utcnow)
     started_at = Column(DateTime, nullable=True)

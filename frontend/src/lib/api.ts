@@ -78,6 +78,7 @@ export const api = {
   getJobStats: (id: number) => request<JobStats>(`/api/jobs/${id}/stats`),
   pauseJob: (id: number) => request<{ status: string }>(`/api/jobs/${id}/pause`, { method: 'POST' }),
   resumeJob: (id: number) => request<{ status: string }>(`/api/jobs/${id}/resume`, { method: 'POST' }),
+  stopJob: (id: number) => request<{ status: string }>(`/api/jobs/${id}/stop`, { method: 'POST' }),
 
   // ── Review ──
   getReviewPhotos: (jobId: number, page = 1, pageSize = 50, minConf = 0, maxConf = 1) =>
@@ -151,6 +152,8 @@ export interface Job {
   review_count: number;
   documents_count: number;
   space_saved_bytes: number;
+  stage_progress: number;
+  stage_total: number;
   llm_model: string | null;
   created_at: string;
   started_at: string | null;
