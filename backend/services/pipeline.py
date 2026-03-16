@@ -59,6 +59,21 @@ class PipelineRunner:
             except Exception:
                 pass
 
+    async def _emit_with_counts(self, db: AsyncSession, event: str, data: dict):
+        """Emit event with live classification counts."""
+        from sqlalchemy import func
+        counts = {}
+        for action in PhotoAction:
+            result = await db.execute(
+                select(func.count(Photo.id)).where(
+                    Photo.job_id == self.job_id,
+                    Photo.action == action,
+                )
+            )
+            counts[action.value] = result.scalar() or 0
+        data["counts"] = counts
+        await self._emit(event, data)
+
     async def run(self):
         async with async_session() as db:
             job = await db.get(Job, self.job_id)
@@ -194,7 +209,7 @@ class PipelineRunner:
 
             if i % 100 == 0:
                 await db.flush()
-                await self._emit("progress", {
+                await self._emit_with_counts(db, "progress", {
                     "stage": "metadata",
                     "current": i,
                     "total": len(photos),
@@ -203,7 +218,7 @@ class PipelineRunner:
 
         job.processed_files = classified
         await db.commit()
-        await self._emit("stage_complete", {
+        await self._emit_with_counts(db, "stage_complete", {
             "stage": "metadata", "classified": classified, "total": len(photos),
         })
 
@@ -255,7 +270,7 @@ class PipelineRunner:
                 dup_count += 1
 
         await db.commit()
-        await self._emit("stage_complete", {
+        await self._emit_with_counts(db, "stage_complete", {
             "stage": "dedup", "groups": len(groups), "duplicates": dup_count,
         })
 
@@ -298,7 +313,7 @@ class PipelineRunner:
 
             if i % 50 == 0:
                 await db.flush()
-                await self._emit("progress", {
+                await self._emit_with_counts(db, "progress", {
                     "stage": "quality",
                     "current": i,
                     "total": len(photos),
@@ -306,7 +321,7 @@ class PipelineRunner:
                 })
 
         await db.commit()
-        await self._emit("stage_complete", {
+        await self._emit_with_counts(db, "stage_complete", {
             "stage": "quality", "classified": classified, "total": len(photos),
         })
 
@@ -441,7 +456,7 @@ class PipelineRunner:
 
             if i % 5 == 0:
                 await db.flush()
-                await self._emit("progress", {
+                await self._emit_with_counts(db, "progress", {
                     "stage": "vision",
                     "current": i,
                     "total": len(photos),
@@ -450,7 +465,7 @@ class PipelineRunner:
 
         await provider.close()
         await db.commit()
-        await self._emit("stage_complete", {
+        await self._emit_with_counts(db, "stage_complete", {
             "stage": "vision", "classified": classified, "total": len(photos),
         })
 
@@ -528,7 +543,7 @@ class PipelineRunner:
 
             if i % 50 == 0:
                 await db.flush()
-                await self._emit("progress", {
+                await self._emit_with_counts(db, "progress", {
                     "stage": "executing",
                     "current": i,
                     "total": len(to_move),
@@ -539,7 +554,7 @@ class PipelineRunner:
         await db.commit()
         await self._update_stats(db, job)
         await db.commit()
-        await self._emit("stage_complete", {
+        await self._emit_with_counts(db, "stage_complete", {
             "stage": "executing", "moved": moved, "errors": errors,
         })
 

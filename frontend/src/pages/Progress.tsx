@@ -5,7 +5,19 @@ import { api } from '../lib/api';
 import type { Job, JobStats } from '../lib/api';
 import type { WsMessage } from '../hooks/useWebSocket';
 
+const STAGES = ['scanning', 'metadata', 'dedup', 'quality', 'vision', 'executing'] as const;
+
 const STAGE_LABELS: Record<string, string> = {
+  scanning: 'Escaneo',
+  metadata: 'Metadata',
+  dedup: 'Duplicados',
+  quality: 'Calidad',
+  vision: 'IA',
+  executing: 'Mover',
+  done: 'Completado',
+};
+
+const STAGE_LABELS_LONG: Record<string, string> = {
   scanning: 'Escaneando archivos',
   metadata: 'Analizando metadata',
   dedup: 'Buscando duplicados',
@@ -22,6 +34,13 @@ const PIE_COLORS = {
   documents: '#3b82f6',
 };
 
+interface Counts {
+  keep: number;
+  trash: number;
+  review: number;
+  documents: number;
+}
+
 interface Props {
   latestMsg: WsMessage | null;
   messages: WsMessage[];
@@ -31,6 +50,7 @@ export default function Progress({ latestMsg, messages }: Props) {
   const [activeJob, setActiveJob] = useState<Job | null>(null);
   const [stats, setStats] = useState<JobStats | null>(null);
   const [progress, setProgress] = useState({ stage: '', current: 0, total: 0, message: '' });
+  const [liveCounts, setLiveCounts] = useState<Counts | null>(null);
 
   // Load active/recent jobs
   useEffect(() => {
@@ -78,7 +98,30 @@ export default function Progress({ latestMsg, messages }: Props) {
         current: latestMsg.current as number,
         total: latestMsg.total as number,
       }));
-    } else if (latestMsg.event === 'stage_complete' || latestMsg.event === 'completed') {
+      // Update live counts from WS
+      if (latestMsg.counts) {
+        const c = latestMsg.counts as Record<string, number>;
+        setLiveCounts({
+          keep: c.keep || 0,
+          trash: c.trash || 0,
+          review: c.review || 0,
+          documents: c.documents || 0,
+        });
+      }
+    } else if (latestMsg.event === 'stage_complete') {
+      if (latestMsg.counts) {
+        const c = latestMsg.counts as Record<string, number>;
+        setLiveCounts({
+          keep: c.keep || 0,
+          trash: c.trash || 0,
+          review: c.review || 0,
+          documents: c.documents || 0,
+        });
+      }
+      api.getJobStats(activeJob.id).then(setStats);
+      api.getJob(activeJob.id).then(setActiveJob);
+    } else if (latestMsg.event === 'completed') {
+      setLiveCounts(null);
       api.getJobStats(activeJob.id).then(setStats);
       api.getJob(activeJob.id).then(setActiveJob);
     }
@@ -99,6 +142,14 @@ export default function Progress({ latestMsg, messages }: Props) {
       Notification.requestPermission();
     }
   }, []);
+
+  // Use live counts if available, otherwise fall back to job data
+  const displayCounts: Counts = liveCounts ?? {
+    keep: activeJob?.kept_count ?? 0,
+    trash: activeJob?.trash_count ?? 0,
+    review: activeJob?.review_count ?? 0,
+    documents: activeJob?.documents_count ?? 0,
+  };
 
   const pieData = useMemo(() => {
     if (!stats) return [];
@@ -170,7 +221,7 @@ export default function Progress({ latestMsg, messages }: Props) {
         <div className="bg-gray-900 border border-gray-800 rounded-lg p-4 space-y-3">
           <div className="flex justify-between text-sm">
             <span className="text-gray-300">
-              {STAGE_LABELS[progress.stage] || progress.message || 'Iniciando...'}
+              {STAGE_LABELS_LONG[progress.stage] || progress.message || 'Iniciando...'}
             </span>
             <span className="text-gray-500">
               {progress.current.toLocaleString()} / {progress.total.toLocaleString()} ({progressPct}%)
@@ -183,33 +234,38 @@ export default function Progress({ latestMsg, messages }: Props) {
             />
           </div>
 
-          {/* Stage indicators */}
+          {/* Stage indicators with labels */}
           <div className="flex gap-1">
-            {['scanning', 'metadata', 'dedup', 'quality', 'vision', 'executing'].map((s) => {
-              const stageOrder = ['scanning', 'metadata', 'dedup', 'quality', 'vision', 'executing'];
-              const currentIdx = stageOrder.indexOf(progress.stage);
-              const thisIdx = stageOrder.indexOf(s);
+            {STAGES.map((s) => {
+              const currentIdx = STAGES.indexOf(progress.stage as typeof STAGES[number]);
+              const thisIdx = STAGES.indexOf(s);
               const done = thisIdx < currentIdx;
               const active = thisIdx === currentIdx;
               return (
-                <div
-                  key={s}
-                  className={`flex-1 h-1 rounded-full ${
-                    done ? 'bg-green-500' : active ? 'bg-purple-500 animate-pulse' : 'bg-gray-800'
-                  }`}
-                />
+                <div key={s} className="flex-1 flex flex-col items-center gap-1">
+                  <div
+                    className={`w-full h-1.5 rounded-full ${
+                      done ? 'bg-green-500' : active ? 'bg-purple-500 animate-pulse' : 'bg-gray-800'
+                    }`}
+                  />
+                  <span className={`text-[10px] leading-none ${
+                    active ? 'text-purple-400 font-medium' : done ? 'text-green-500/70' : 'text-gray-600'
+                  }`}>
+                    {STAGE_LABELS[s]}
+                  </span>
+                </div>
               );
             })}
           </div>
         </div>
       )}
 
-      {/* Stats cards */}
+      {/* Stats cards — live-updating */}
       <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
-        <StatCard label="Mantener" value={activeJob.kept_count} color="text-green-400" />
-        <StatCard label="Basura" value={activeJob.trash_count} color="text-red-400" />
-        <StatCard label="Review" value={activeJob.review_count} color="text-yellow-400" />
-        <StatCard label="Documentos" value={activeJob.documents_count} color="text-blue-400" />
+        <StatCard label="Mantener" value={displayCounts.keep} color="text-green-400" />
+        <StatCard label="Basura" value={displayCounts.trash} color="text-red-400" />
+        <StatCard label="Review" value={displayCounts.review} color="text-yellow-400" />
+        <StatCard label="Documentos" value={displayCounts.documents} color="text-blue-400" />
       </div>
 
       {/* Space saved */}
@@ -293,7 +349,9 @@ export default function Progress({ latestMsg, messages }: Props) {
 function StatCard({ label, value, color }: { label: string; value: number; color: string }) {
   return (
     <div className="bg-gray-900 border border-gray-800 rounded-lg p-3">
-      <div className={`text-2xl font-bold ${color}`}>{value.toLocaleString()}</div>
+      <div className={`text-2xl font-bold tabular-nums transition-all duration-300 ${color}`}>
+        {value.toLocaleString()}
+      </div>
       <div className="text-xs text-gray-500">{label}</div>
     </div>
   );
