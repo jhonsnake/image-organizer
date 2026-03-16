@@ -93,6 +93,27 @@ async def _auto_migrate_providers():
         await db.commit()
 
 
+async def _migrate_db():
+    """Add missing columns to existing tables (poor-man's migration)."""
+    from sqlalchemy import text
+    async with async_session() as db:
+        # Check which columns exist in jobs table
+        result = await db.execute(text("PRAGMA table_info(jobs)"))
+        existing = {row[1] for row in result.fetchall()}
+
+        migrations = []
+        if "stage_progress" not in existing:
+            migrations.append("ALTER TABLE jobs ADD COLUMN stage_progress INTEGER DEFAULT 0")
+        if "stage_total" not in existing:
+            migrations.append("ALTER TABLE jobs ADD COLUMN stage_total INTEGER DEFAULT 0")
+
+        for sql in migrations:
+            await db.execute(text(sql))
+            logger.info(f"Migration: {sql}")
+        if migrations:
+            await db.commit()
+
+
 async def _recover_crashed_jobs():
     """Mark any RUNNING jobs as PAUSED on startup — they crashed with the server."""
     from sqlalchemy import select
@@ -123,6 +144,7 @@ async def lifespan(app: FastAPI):
 
     # Initialize database
     await init_db()
+    await _migrate_db()
     logger.info("Database initialized")
 
     # Auto-migrate: if AppConfig has llm_url but no providers exist, create one
