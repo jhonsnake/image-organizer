@@ -32,6 +32,7 @@ export interface AppConfig {
   brightness_threshold: number;
   confidence_threshold: number;
   max_image_size: number;
+  active_provider_id?: number;
 }
 
 export interface LlmInfo {
@@ -62,9 +63,6 @@ export const api = {
   createJob: (data: {
     nas_user: string;
     source_dir: string;
-    llm_url: string;
-    llm_model: string;
-    use_providers?: boolean;
     blur_threshold: number;
     hash_threshold: number;
     confidence_threshold: number;
@@ -118,6 +116,12 @@ export const api = {
     request<{ providers: DetectedProvider[]; recommended: DetectedProvider | null }>('/api/providers/detect', { method: 'POST' }),
   testProvider: (id: number) =>
     request<{ available: boolean; models: string[]; provider_name: string }>(`/api/providers/${id}/test`, { method: 'POST' }),
+  reorderProviders: (order: { id: number; priority: number }[]) =>
+    request<{ updated: number }>('/api/providers/reorder', { method: 'PUT', body: JSON.stringify(order) }),
+  toggleProvider: (id: number) =>
+    request<{ id: number; enabled: boolean }>(`/api/providers/${id}/toggle`, { method: 'PATCH' }),
+  getProviderModels: (id: number) =>
+    request<{ models: string[] }>(`/api/providers/${id}/models`),
 
   // ── V2: Watcher ──
   getWatcherStatus: () => request<WatcherStatus>('/api/watcher/status'),

@@ -87,6 +87,7 @@ class AppConfig(Base):
     brightness_threshold = Column(Float, default=245.0)
     confidence_threshold = Column(Float, default=0.7)
     max_image_size = Column(Integer, default=512)
+    active_provider_id = Column(Integer, nullable=True)
     updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
 
 
@@ -110,7 +111,7 @@ class Job(Base):
     # Config snapshot
     llm_url = Column(String(512))
     llm_model = Column(String(255))
-    use_providers = Column(Boolean, default=False)  # V2: use provider registry
+    provider_id = Column(Integer, nullable=True)  # Snapshot of provider used
     blur_threshold = Column(Float)
     hash_threshold = Column(Integer)
     confidence_threshold = Column(Float)

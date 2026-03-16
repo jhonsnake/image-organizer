@@ -4,7 +4,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from models import VisionProviderConfig, get_db
@@ -123,6 +123,62 @@ async def delete_provider_config(
     await db.delete(config)
     await db.commit()
     return {"deleted": True}
+
+
+class ReorderItem(BaseModel):
+    id: int
+    priority: int
+
+
+@router.put("/reorder")
+async def reorder_providers(
+    items: list[ReorderItem], db: AsyncSession = Depends(get_db),
+):
+    """Batch-update provider priorities."""
+    for item in items:
+        await db.execute(
+            update(VisionProviderConfig)
+            .where(VisionProviderConfig.id == item.id)
+            .values(priority=item.priority)
+        )
+    await db.commit()
+    return {"updated": len(items)}
+
+
+@router.patch("/{provider_id}/toggle")
+async def toggle_provider(
+    provider_id: int, db: AsyncSession = Depends(get_db),
+):
+    """Toggle a provider enabled/disabled."""
+    config = await db.get(VisionProviderConfig, provider_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    config.enabled = not config.enabled
+    await db.commit()
+    await db.refresh(config)
+    return {"id": config.id, "enabled": config.enabled}
+
+
+@router.get("/{provider_id}/models")
+async def get_provider_models(
+    provider_id: int, db: AsyncSession = Depends(get_db),
+):
+    """List models available on a specific provider."""
+    config = await db.get(VisionProviderConfig, provider_id)
+    if not config:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    provider = create_provider(
+        provider_type=config.provider_type,
+        base_url=config.base_url,
+        model=config.model,
+        api_key=config.api_key,
+    )
+    try:
+        models = await provider.list_models()
+        return {"models": models}
+    finally:
+        await provider.close()
 
 
 @router.post("/detect")

@@ -14,7 +14,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from config import settings
-from models import init_db
+from models import init_db, async_session, VisionProviderConfig, AppConfig
 
 logging.basicConfig(
     level=logging.INFO,
@@ -63,6 +63,36 @@ def broadcast_progress(job_id: int, event: str, data: dict):
         asyncio.run_coroutine_threadsafe(ws_manager.broadcast(msg), _loop)
 
 
+# ── Auto-migration ──
+
+async def _auto_migrate_providers():
+    """If there are AppConfig rows with llm_url but no providers, auto-create a provider."""
+    from sqlalchemy import select, func
+    async with async_session() as db:
+        count_result = await db.execute(select(func.count(VisionProviderConfig.id)))
+        provider_count = count_result.scalar() or 0
+        if provider_count > 0:
+            return
+
+        result = await db.execute(select(AppConfig))
+        configs = list(result.scalars().all())
+        seen_urls = set()
+        for cfg in configs:
+            if cfg.llm_url and cfg.llm_url not in seen_urls:
+                seen_urls.add(cfg.llm_url)
+                provider = VisionProviderConfig(
+                    name=f"Local LLM ({cfg.llm_model or 'auto'})",
+                    provider_type="openai-compatible",
+                    base_url=cfg.llm_url,
+                    model=cfg.llm_model or "",
+                    priority=10,
+                    enabled=True,
+                )
+                db.add(provider)
+                logger.info(f"Auto-migrated provider from AppConfig: {cfg.llm_url}")
+        await db.commit()
+
+
 # ── App lifecycle ──
 
 @asynccontextmanager
@@ -77,6 +107,10 @@ async def lifespan(app: FastAPI):
     # Initialize database
     await init_db()
     logger.info("Database initialized")
+
+    # Auto-migrate: if AppConfig has llm_url but no providers exist, create one
+    await _auto_migrate_providers()
+
     logger.info(f"Server running on http://{settings.host}:{settings.port}")
 
     yield

@@ -10,7 +10,7 @@ from sqlalchemy import select, desc
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import Job, Photo, JobStatus, PipelineStage, PhotoAction, get_db
+from models import Job, Photo, VisionProviderConfig, JobStatus, PipelineStage, PhotoAction, get_db
 from services.pipeline import PipelineRunner
 
 router = APIRouter(prefix="/api/jobs", tags=["jobs"])
@@ -22,11 +22,6 @@ _active_runners: dict[int, PipelineRunner] = {}
 class CreateJobRequest(BaseModel):
     nas_user: str
     source_dir: str
-    # V1 mode: direct URL + model
-    llm_url: str = settings.default_llm_url
-    llm_model: str = settings.default_model
-    # V2 mode: use provider registry with fallback
-    use_providers: bool = False  # If true, ignore llm_url/llm_model and use registry
     blur_threshold: float = settings.default_blur_threshold
     hash_threshold: int = settings.default_hash_threshold
     confidence_threshold: float = settings.default_confidence_threshold
@@ -72,12 +67,21 @@ async def create_job(req: CreateJobRequest, db: AsyncSession = Depends(get_db)):
             detail=f"Ya hay un job activo para {req.nas_user} (ID: {existing.id})",
         )
 
+    # Snapshot the first enabled provider
+    prov_result = await db.execute(
+        select(VisionProviderConfig)
+        .where(VisionProviderConfig.enabled == True)
+        .order_by(VisionProviderConfig.priority)
+        .limit(1)
+    )
+    first_provider = prov_result.scalar_one_or_none()
+
     job = Job(
         nas_user=req.nas_user,
         source_dir=req.source_dir,
-        llm_url=req.llm_url,
-        llm_model=req.llm_model,
-        use_providers=req.use_providers,
+        llm_url=first_provider.base_url if first_provider else "",
+        llm_model=first_provider.model if first_provider else "",
+        provider_id=first_provider.id if first_provider else None,
         blur_threshold=req.blur_threshold,
         hash_threshold=req.hash_threshold,
         confidence_threshold=req.confidence_threshold,

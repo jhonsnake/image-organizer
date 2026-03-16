@@ -1,0 +1,12 @@
+node_modules
+frontend/node_modules
+frontend/dist
+backend/.venv
+backend/__pycache__
+backend/**/__pycache__
+backend/data
+.git
+.claude
+mnt
+*.png
+*.pyc

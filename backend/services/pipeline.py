@@ -23,7 +23,7 @@ from services.scanner import (
     scan_directory, classify_metadata, compute_phash,
     find_duplicate_groups, analyze_quality,
 )
-from services.vision import OpenAICompatibleProvider, create_provider
+from services.vision import create_provider
 from services.thumbnails import generate_thumbnail
 
 logger = logging.getLogger(__name__)
@@ -330,49 +330,38 @@ class PipelineRunner:
 
         confidence_threshold = job.confidence_threshold or settings.default_confidence_threshold
 
-        # Resolve provider: either from registry (V2) or direct URL (V1)
+        # Always use provider registry — try each enabled provider in priority order
         provider = None
         provider_label = ""
 
-        if job.use_providers:
-            # V2: try providers in priority order
-            prov_result = await db.execute(
-                select(VisionProviderConfig)
-                .where(VisionProviderConfig.enabled == True)
-                .order_by(VisionProviderConfig.priority)
-            )
-            prov_configs = list(prov_result.scalars().all())
+        prov_result = await db.execute(
+            select(VisionProviderConfig)
+            .where(VisionProviderConfig.enabled == True)
+            .order_by(VisionProviderConfig.priority)
+        )
+        prov_configs = list(prov_result.scalars().all())
 
-            for pc in prov_configs:
-                candidate = create_provider(
-                    provider_type=pc.provider_type,
-                    base_url=pc.base_url,
-                    model=pc.model,
-                    api_key=pc.api_key,
-                )
-                if await candidate.is_available():
-                    provider = candidate
-                    provider_label = f"{pc.name} ({pc.model or pc.provider_type})"
-                    await self._emit("stage", {
-                        "stage": "vision",
-                        "message": f"Usando provider: {provider_label}",
-                    })
-                    break
-                else:
-                    await candidate.close()
-                    await self._emit("stage", {
-                        "stage": "vision",
-                        "message": f"Provider '{pc.name}' no disponible, probando siguiente...",
-                    })
-        else:
-            # V1: direct URL + model
-            llm_url = job.llm_url or settings.default_llm_url
-            llm_model = job.llm_model or settings.default_model
-            provider = OpenAICompatibleProvider(base_url=llm_url, model=llm_model)
-            provider_label = llm_model
-            if not await provider.is_available():
-                await provider.close()
-                provider = None
+        for pc in prov_configs:
+            candidate = create_provider(
+                provider_type=pc.provider_type,
+                base_url=pc.base_url,
+                model=pc.model,
+                api_key=pc.api_key,
+            )
+            if await candidate.is_available():
+                provider = candidate
+                provider_label = f"{pc.name} ({pc.model or pc.provider_type})"
+                await self._emit("stage", {
+                    "stage": "vision",
+                    "message": f"Usando provider: {provider_label}",
+                })
+                break
+            else:
+                await candidate.close()
+                await self._emit("stage", {
+                    "stage": "vision",
+                    "message": f"Provider '{pc.name}' no disponible, probando siguiente...",
+                })
 
         if not provider:
             await self._emit("stage", {

@@ -1,0 +1,20 @@
+services:
+  photo-cleaner:
+    build: .
+    container_name: nas-photo-cleaner
+    restart: unless-stopped
+    ports:
+      - "8090:8090"
+    volumes:
+      # Persistent database and thumbnails
+      - app-data:/app/data
+      # NAS homes (read-write for moving files to _cleanup)
+      - /volume1/homes:/data/homes
+    environment:
+      - CLEANER_HOMES_MOUNT=/data/homes
+      - CLEANER_NAS_USERS=["jhonsnake","Kelly Cristancho"]
+      # Override default LLM endpoint if needed
+      # - CLEANER_DEFAULT_LLM_URL=http://100.127.43.94:1234/v1
+
+volumes:
+  app-data:
