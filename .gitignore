@@ -1,0 +1,39 @@
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+dist/
+build/
+
+# Backend data
+backend/data/
+backend/test_photos/
+backend/.venv/
+
+# Node
+node_modules/
+frontend/dist/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Env
+.env
+.env.local
+
+# Playwright MCP
+.playwright-mcp/
+*.png
+!frontend/public/*.png
+
+# Old scripts (kept for reference)
+mnt/

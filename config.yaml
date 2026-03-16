@@ -1,0 +1,114 @@
+# ============================================================
+# NAS Photo Cleanup Pipeline - Configuration
+# ============================================================
+# Adjust these paths and thresholds to match your setup.
+
+# --- Paths ---
+# Source: where Synology Photos stores your images (SMB mount)
+# Use forward slashes even on Windows, or raw strings in Python.
+source_dir: "Z:/photo/Photos"    # Adjust to your mapped NAS drive
+
+# Staging directories (created on NAS alongside source)
+# Files are MOVED here, never deleted directly.
+staging:
+  trash: "Z:/photo/_cleanup/trash"
+  review: "Z:/photo/_cleanup/review"
+  documents: "Z:/photo/_cleanup/documents"
+
+# --- Step 1: Metadata Filter ---
+metadata:
+  # Screenshot detection: images matching these exact aspect ratios
+  # (common phone screen ratios) AND missing camera EXIF data
+  screenshot_ratios:
+    - [9, 16]
+    - [9, 19]
+    - [9, 19.5]
+    - [9, 20]
+    - [9, 21]
+    - [10, 16]
+    - [3, 4]       # iPad
+    - [16, 9]      # Desktop screenshots (landscape)
+    - [16, 10]     # Desktop screenshots (landscape)
+
+  # WhatsApp/Telegram image filename patterns
+  messaging_patterns:
+    - "IMG-*-WA*"          # WhatsApp
+    - "photo_*_*"          # Telegram
+    - "signal-*"           # Signal
+    - "sticker*"           # Stickers
+
+  # Screenshots older than this go directly to trash
+  screenshot_max_age_days: 180
+
+  # Minimum file size (bytes) - smaller = likely icon/sticker
+  min_file_size_bytes: 15000   # 15KB
+
+# --- Step 2: Perceptual Hash Deduplication ---
+dedup:
+  # Hash difference threshold (0=identical, higher=more tolerant)
+  # 8 is a good default for "visually very similar" (burst photos)
+  hash_threshold: 8
+
+  # Minimum group size to consider as burst/duplicates
+  min_group_size: 2
+
+  # Strategy for picking the "best" in a group:
+  # "largest" = keep highest resolution, "sharpest" = keep least blurry
+  keep_strategy: "sharpest"
+
+# --- Step 3: Quality Analysis ---
+quality:
+  # Laplacian variance below this = blurry
+  blur_threshold: 50.0
+
+  # Average brightness below this = too dark (0-255)
+  darkness_threshold: 15
+
+  # Average brightness above this = overexposed
+  brightness_threshold: 245
+
+  # Images smaller than this in ANY dimension = too small
+  min_dimension_px: 100
+
+# --- Step 4: Vision Model Classification ---
+vision:
+  # Ollama model name (must be pulled first: ollama pull qwen3-vl:8b)
+  model: "qwen3-vl:8b"
+
+  # Ollama API endpoint
+  ollama_url: "http://localhost:11434"
+
+  # Use /no_think for speed; /think for ambiguous cases
+  use_thinking: false
+
+  # Max concurrent requests to Ollama
+  concurrency: 2
+
+  # Confidence threshold: below this → review folder
+  confidence_threshold: 0.7
+
+  # Max image dimension sent to model (resize for speed)
+  max_image_size: 512
+
+# --- General ---
+general:
+  # Supported image extensions
+  extensions:
+    - ".jpg"
+    - ".jpeg"
+    - ".png"
+    - ".gif"
+    - ".webp"
+    - ".heic"
+    - ".heif"
+    - ".bmp"
+    - ".tiff"
+
+  # Dry run: if true, only logs actions without moving files
+  dry_run: true
+
+  # Log file location
+  log_file: "cleanup_log.jsonl"
+
+  # Number of worker threads for I/O operations
+  workers: 4

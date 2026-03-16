@@ -1,0 +1,31 @@
+@import "tailwindcss";
+
+body {
+  margin: 0;
+  font-family: system-ui, -apple-system, sans-serif;
+}
+
+/* Reusable component classes */
+.input {
+  @apply w-full rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-100 placeholder-gray-500 focus:border-purple-500 focus:outline-none focus:ring-1 focus:ring-purple-500/50;
+}
+
+.label {
+  @apply block text-xs text-gray-500 mb-1;
+}
+
+.btn-primary {
+  @apply rounded-md bg-purple-600 px-4 py-2 text-sm font-medium text-white hover:bg-purple-500 disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
+}
+
+.btn-secondary {
+  @apply rounded-md border border-gray-700 bg-gray-800 px-3 py-2 text-sm text-gray-300 hover:bg-gray-700 hover:text-gray-100 disabled:opacity-40 disabled:cursor-not-allowed transition-colors;
+}
+
+.btn-danger {
+  @apply rounded-md bg-red-600/20 border border-red-500/30 px-3 py-1.5 text-sm text-red-400 hover:bg-red-600/30 transition-colors;
+}
+
+.btn-success {
+  @apply rounded-md bg-green-600/20 border border-green-500/30 px-3 py-1.5 text-sm text-green-400 hover:bg-green-600/30 transition-colors;
+}
