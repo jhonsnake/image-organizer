@@ -4,6 +4,7 @@ from sqlalchemy import (
     Column, Integer, String, Float, Boolean, DateTime, Enum, Text,
     ForeignKey, create_engine, Index,
 )
+from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine, AsyncSession, async_sessionmaker
 from sqlalchemy.orm import DeclarativeBase, relationship
 
@@ -204,12 +205,18 @@ class WatcherEvent(Base):
 
 # ── Database setup ──
 
-engine = create_async_engine(settings.database_url, echo=False)
+engine = create_async_engine(
+    settings.database_url,
+    echo=False,
+    connect_args={"timeout": 30},
+)
 async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
 
 
 async def init_db():
     async with engine.begin() as conn:
+        # Enable WAL mode for better concurrent read/write
+        await conn.execute(text("PRAGMA journal_mode=WAL"))
         await conn.run_sync(Base.metadata.create_all)
 
 

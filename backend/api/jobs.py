@@ -6,7 +6,7 @@ from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
-from sqlalchemy import select, desc
+from sqlalchemy import select, desc, delete
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
@@ -193,12 +193,8 @@ async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
     if job.status in (JobStatus.RUNNING, JobStatus.PENDING):
         raise HTTPException(status_code=400, detail="No se puede eliminar un job activo")
 
-    # Delete photos first, then job
-    await db.execute(select(Photo).where(Photo.job_id == job_id))
-    photos = (await db.execute(select(Photo).where(Photo.job_id == job_id))).scalars().all()
-    for p in photos:
-        await db.delete(p)
-    await db.delete(job)
+    await db.execute(delete(Photo).where(Photo.job_id == job_id))
+    await db.execute(delete(Job).where(Job.id == job_id))
     await db.commit()
     return {"deleted": True}
 
@@ -207,18 +203,16 @@ async def delete_job(job_id: int, db: AsyncSession = Depends(get_db)):
 async def clear_jobs(db: AsyncSession = Depends(get_db)):
     """Delete all non-active jobs from history."""
     result = await db.execute(
-        select(Job).where(Job.status.notin_([JobStatus.RUNNING, JobStatus.PENDING]))
+        select(Job.id).where(Job.status.notin_([JobStatus.RUNNING, JobStatus.PENDING]))
     )
-    jobs = list(result.scalars().all())
-    count = 0
-    for job in jobs:
-        photos = (await db.execute(select(Photo).where(Photo.job_id == job.id))).scalars().all()
-        for p in photos:
-            await db.delete(p)
-        await db.delete(job)
-        count += 1
+    job_ids = [row[0] for row in result.all()]
+    if not job_ids:
+        return {"deleted": 0}
+
+    await db.execute(delete(Photo).where(Photo.job_id.in_(job_ids)))
+    await db.execute(delete(Job).where(Job.id.in_(job_ids)))
     await db.commit()
-    return {"deleted": count}
+    return {"deleted": len(job_ids)}
 
 
 @router.post("/{job_id}/stop")
