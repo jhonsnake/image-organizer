@@ -103,10 +103,14 @@ app.add_middleware(
 from api.config import router as config_router
 from api.jobs import router as jobs_router
 from api.review import router as review_router
+from api.providers import router as providers_router
+from api.watcher import router as watcher_router
 
 app.include_router(config_router)
 app.include_router(jobs_router)
 app.include_router(review_router)
+app.include_router(providers_router)
+app.include_router(watcher_router)
 
 
 # ── WebSocket endpoint ──
@@ -133,7 +137,13 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.get("/api/health")
 async def health():
-    return {"status": "ok", "version": "1.0.0"}
+    from services.watcher import get_watcher
+    watcher = get_watcher()
+    return {
+        "status": "ok",
+        "version": "2.0.0",
+        "watcher": watcher.stats if watcher else None,
+    }
 
 
 # ── Serve React frontend (production) ──

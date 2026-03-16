@@ -23,7 +23,7 @@ from services.scanner import (
     scan_directory, classify_metadata, compute_phash,
     find_duplicate_groups, analyze_quality,
 )
-from services.vision import OpenAICompatibleProvider
+from services.vision import OpenAICompatibleProvider, create_provider
 from services.thumbnails import generate_thumbnail
 
 logger = logging.getLogger(__name__)

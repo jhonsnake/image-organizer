@@ -159,6 +159,237 @@ class OpenAICompatibleProvider(VisionProvider):
         await self._client.aclose()
 
 
+class AnthropicProvider(VisionProvider):
+    """Provider for Anthropic Claude API (claude-sonnet, claude-haiku, etc.)."""
+
+    def __init__(self, api_key: str, model: str = "claude-sonnet-4-20250514"):
+        self.api_key = api_key
+        self.model = model
+        self._client = httpx.AsyncClient(
+            timeout=60,
+            base_url="https://api.anthropic.com",
+        )
+
+    @property
+    def provider_name(self) -> str:
+        return "anthropic"
+
+    async def is_available(self) -> bool:
+        if not self.api_key or self.api_key == "not-needed":
+            return False
+        try:
+            # Light check — just verify auth with a minimal request
+            resp = await self._client.post(
+                "/v1/messages",
+                headers={
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": 1,
+                    "messages": [{"role": "user", "content": "hi"}],
+                },
+            )
+            return resp.status_code in (200, 429)  # 429 = rate limited but valid key
+        except Exception:
+            return False
+
+    async def list_models(self) -> list[str]:
+        return [
+            "claude-sonnet-4-20250514",
+            "claude-haiku-4-20250414",
+        ]
+
+    async def classify(self, image_path: str, max_size: int = 512) -> Optional[dict]:
+        img_b64 = self.prepare_image_b64(image_path, max_size)
+        if not img_b64:
+            return None
+
+        try:
+            resp = await self._client.post(
+                "/v1/messages",
+                headers={
+                    "x-api-key": self.api_key,
+                    "anthropic-version": "2023-06-01",
+                    "content-type": "application/json",
+                },
+                json={
+                    "model": self.model,
+                    "max_tokens": 100,
+                    "messages": [
+                        {
+                            "role": "user",
+                            "content": [
+                                {
+                                    "type": "image",
+                                    "source": {
+                                        "type": "base64",
+                                        "media_type": "image/jpeg",
+                                        "data": img_b64,
+                                    },
+                                },
+                                {"type": "text", "text": CLASSIFICATION_PROMPT},
+                            ],
+                        }
+                    ],
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Anthropic returned {resp.status_code}: {resp.text[:200]}")
+                return None
+
+            content = resp.json()["content"][0]["text"]
+            return _parse_classification(content)
+
+        except Exception as e:
+            logger.warning(f"Anthropic classification failed: {e}")
+            return None
+
+    async def close(self):
+        await self._client.aclose()
+
+
+class GeminiProvider(VisionProvider):
+    """Provider for Google Gemini API."""
+
+    def __init__(self, api_key: str, model: str = "gemini-2.0-flash"):
+        self.api_key = api_key
+        self.model = model
+        self._client = httpx.AsyncClient(timeout=60)
+
+    @property
+    def provider_name(self) -> str:
+        return "gemini"
+
+    async def is_available(self) -> bool:
+        if not self.api_key or self.api_key == "not-needed":
+            return False
+        try:
+            resp = await self._client.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}",
+            )
+            return resp.status_code == 200
+        except Exception:
+            return False
+
+    async def list_models(self) -> list[str]:
+        try:
+            resp = await self._client.get(
+                f"https://generativelanguage.googleapis.com/v1beta/models?key={self.api_key}",
+            )
+            if resp.status_code == 200:
+                models = resp.json().get("models", [])
+                return [
+                    m["name"].replace("models/", "")
+                    for m in models
+                    if "vision" in m.get("name", "").lower()
+                    or "gemini" in m.get("name", "").lower()
+                ]
+        except Exception:
+            pass
+        return ["gemini-2.0-flash", "gemini-2.5-flash"]
+
+    async def classify(self, image_path: str, max_size: int = 512) -> Optional[dict]:
+        img_b64 = self.prepare_image_b64(image_path, max_size)
+        if not img_b64:
+            return None
+
+        try:
+            resp = await self._client.post(
+                f"https://generativelanguage.googleapis.com/v1beta/models/{self.model}:generateContent?key={self.api_key}",
+                json={
+                    "contents": [
+                        {
+                            "parts": [
+                                {
+                                    "inline_data": {
+                                        "mime_type": "image/jpeg",
+                                        "data": img_b64,
+                                    }
+                                },
+                                {"text": CLASSIFICATION_PROMPT},
+                            ]
+                        }
+                    ],
+                    "generationConfig": {
+                        "temperature": 0.1,
+                        "maxOutputTokens": 100,
+                    },
+                },
+            )
+            if resp.status_code != 200:
+                logger.warning(f"Gemini returned {resp.status_code}: {resp.text[:200]}")
+                return None
+
+            content = resp.json()["candidates"][0]["content"]["parts"][0]["text"]
+            return _parse_classification(content)
+
+        except Exception as e:
+            logger.warning(f"Gemini classification failed: {e}")
+            return None
+
+    async def close(self):
+        await self._client.aclose()
+
+
+# ── Provider Registry ──
+
+PROVIDER_TYPES = {
+    "openai-compatible": OpenAICompatibleProvider,
+    "anthropic": AnthropicProvider,
+    "gemini": GeminiProvider,
+}
+
+
+def create_provider(
+    provider_type: str,
+    base_url: str = "",
+    model: str = "",
+    api_key: str = "not-needed",
+) -> VisionProvider:
+    """Factory to create a provider by type."""
+    if provider_type == "openai-compatible":
+        return OpenAICompatibleProvider(base_url=base_url, model=model, api_key=api_key)
+    elif provider_type == "anthropic":
+        return AnthropicProvider(api_key=api_key, model=model or "claude-sonnet-4-20250514")
+    elif provider_type == "gemini":
+        return GeminiProvider(api_key=api_key, model=model or "gemini-2.0-flash")
+    else:
+        raise ValueError(f"Unknown provider type: {provider_type}")
+
+
+async def detect_available_providers(configs: list[dict]) -> list[dict]:
+    """
+    Check which providers are available from a list of configurations.
+    Each config: {"type": str, "base_url": str, "model": str, "api_key": str}
+    Returns list with 'available' field added.
+    """
+    results = []
+    for cfg in configs:
+        provider = create_provider(
+            provider_type=cfg["type"],
+            base_url=cfg.get("base_url", ""),
+            model=cfg.get("model", ""),
+            api_key=cfg.get("api_key", "not-needed"),
+        )
+        try:
+            available = await provider.is_available()
+            models = await provider.list_models() if available else []
+            results.append({
+                **cfg,
+                "available": available,
+                "models": models,
+                "provider_name": provider.provider_name,
+            })
+        except Exception:
+            results.append({**cfg, "available": False, "models": [], "provider_name": cfg["type"]})
+        finally:
+            await provider.close()
+    return results
+
+
 def _parse_classification(text: str) -> Optional[dict]:
     """Parse model response into {"category": str, "confidence": float}."""
     text = text.strip()

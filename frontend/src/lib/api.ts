@@ -103,6 +103,32 @@ export const api = {
 
   thumbnailUrl: (filename: string) => `/api/review/thumbnail/${filename}`,
   fullImageUrl: (photoId: number) => `/api/review/full/${photoId}`,
+
+  // ── V2: Providers ──
+  getProviderTypes: () => request<ProviderType[]>('/api/providers/types'),
+  listProviders: () => request<VisionProvider[]>('/api/providers/'),
+  createProvider: (data: ProviderInput) =>
+    request<VisionProvider>('/api/providers/', { method: 'POST', body: JSON.stringify(data) }),
+  updateProvider: (id: number, data: ProviderInput) =>
+    request<VisionProvider>(`/api/providers/${id}`, { method: 'PUT', body: JSON.stringify(data) }),
+  deleteProvider: (id: number) =>
+    request<{ deleted: boolean }>(`/api/providers/${id}`, { method: 'DELETE' }),
+  detectProviders: () =>
+    request<{ providers: DetectedProvider[]; recommended: DetectedProvider | null }>('/api/providers/detect', { method: 'POST' }),
+  testProvider: (id: number) =>
+    request<{ available: boolean; models: string[]; provider_name: string }>(`/api/providers/${id}/test`, { method: 'POST' }),
+
+  // ── V2: Watcher ──
+  getWatcherStatus: () => request<WatcherStatus>('/api/watcher/status'),
+  startWatcher: (pollInterval = 30, autoClassify = true) =>
+    request<WatcherStatus>('/api/watcher/start', {
+      method: 'POST',
+      body: JSON.stringify({ poll_interval: pollInterval, auto_classify: autoClassify }),
+    }),
+  stopWatcher: () => request<{ status: string }>('/api/watcher/stop', { method: 'POST' }),
+  getWatcherEvents: (limit = 50) =>
+    request<WatcherEvent[]>(`/api/watcher/events?limit=${limit}`),
+  getWatcherStats: () => request<{ total: number; processed: number; pending: number }>('/api/watcher/events/stats'),
 };
 
 // ── Types ──
@@ -153,4 +179,62 @@ export interface ReviewPhoto {
   brightness: number;
   duplicate_group: string | null;
   thumbnail_path: string | null;
+}
+
+// ── V2 Types ──
+
+export interface ProviderType {
+  type: string;
+  label: string;
+  requires_url: boolean;
+  requires_key: boolean;
+}
+
+export interface ProviderInput {
+  name: string;
+  provider_type: string;
+  base_url?: string;
+  model?: string;
+  api_key?: string;
+  priority?: number;
+  enabled?: boolean;
+}
+
+export interface VisionProvider extends ProviderInput {
+  id: number;
+  available?: boolean;
+  models?: string[];
+}
+
+export interface DetectedProvider {
+  id: number;
+  type: string;
+  name: string;
+  available: boolean;
+  models: string[];
+  provider_name: string;
+  priority: number;
+}
+
+export interface WatcherStatus {
+  running: boolean;
+  known_files: number;
+  watched_dirs: number;
+  poll_interval?: number;
+  status?: string;
+}
+
+export interface WatcherEvent {
+  id: number;
+  filepath: string;
+  filename: string;
+  nas_user: string;
+  action: string | null;
+  reason: string | null;
+  confidence: number;
+  provider_used: string | null;
+  processed: boolean;
+  moved: boolean;
+  detected_at: string;
+  processed_at: string | null;
 }

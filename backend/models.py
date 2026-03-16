@@ -164,6 +164,39 @@ class Photo(Base):
     )
 
 
+class VisionProviderConfig(Base):
+    """V2: Configured vision providers (local + cloud)."""
+    __tablename__ = "vision_providers"
+
+    id = Column(Integer, primary_key=True)
+    name = Column(String(255), nullable=False)  # Display name
+    provider_type = Column(String(64), nullable=False)  # openai-compatible, anthropic, gemini
+    base_url = Column(String(512), default="")
+    model = Column(String(255), default="")
+    api_key = Column(String(512), default="")  # Stored encrypted in production
+    priority = Column(Integer, default=10)  # Lower = preferred (fallback order)
+    enabled = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+
+
+class WatcherEvent(Base):
+    """V2: Log of auto-detected file events from the watcher."""
+    __tablename__ = "watcher_events"
+
+    id = Column(Integer, primary_key=True)
+    filepath = Column(String(2048), nullable=False)
+    filename = Column(String(512), nullable=False)
+    nas_user = Column(String(255), nullable=False)
+    action = Column(Enum(PhotoAction), nullable=True)
+    reason = Column(String(255), nullable=True)
+    confidence = Column(Float, default=0.0)
+    provider_used = Column(String(255), nullable=True)
+    processed = Column(Boolean, default=False)
+    moved = Column(Boolean, default=False)
+    detected_at = Column(DateTime, default=datetime.utcnow)
+    processed_at = Column(DateTime, nullable=True)
+
+
 # ── Database setup ──
 
 engine = create_async_engine(settings.database_url, echo=False)

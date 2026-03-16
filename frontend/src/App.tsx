@@ -1,10 +1,12 @@
 import { BrowserRouter, Routes, Route, NavLink } from 'react-router-dom';
 import { useState, useCallback } from 'react';
-import { Camera, Settings, PlayCircle, CheckSquare, History } from 'lucide-react';
+import { Camera, Settings, PlayCircle, CheckSquare, History, Blocks, Eye } from 'lucide-react';
 import Dashboard from './pages/Dashboard';
 import Progress from './pages/Progress';
 import Review from './pages/Review';
 import HistoryPage from './pages/History';
+import Providers from './pages/Providers';
+import Watcher from './pages/Watcher';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WsMessage } from './hooks/useWebSocket';
 
@@ -13,6 +15,8 @@ const navItems = [
   { to: '/progress', icon: PlayCircle, label: 'Progreso' },
   { to: '/review', icon: CheckSquare, label: 'Review' },
   { to: '/history', icon: History, label: 'Historial' },
+  { to: '/providers', icon: Blocks, label: 'Providers' },
+  { to: '/watcher', icon: Eye, label: 'Monitor' },
 ];
 
 export default function App() {
@@ -71,6 +75,8 @@ export default function App() {
             <Route path="/progress" element={<Progress latestMsg={latestMsg} messages={wsMessages} />} />
             <Route path="/review" element={<Review />} />
             <Route path="/history" element={<HistoryPage />} />
+            <Route path="/providers" element={<Providers />} />
+            <Route path="/watcher" element={<Watcher />} />
           </Routes>
         </main>
       </div>
