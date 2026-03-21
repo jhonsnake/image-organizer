@@ -13,6 +13,7 @@ to a `_cleanup` folder — **nothing is ever deleted automatically**.
 - **Space analysis**: per-job breakdown by category, media type, and reason with recovery recommendations and charts
 - **Manual review queue**: review uncertain classifications with thumbnail previews (images and videos)
 - **WhatsApp detection**: identifies stickers, statuses, and forwarded media by filename and path patterns
+- **Auto-organize by date**: all photos organized into `YYYY/MM/` folders using EXIF date, filename patterns, or file modification time — respects existing subfolder names
 - **Docker deployment**: single container, runs directly on your NAS
 - **Synology Photos compatible**: moves files without touching the Synology database
 
@@ -140,11 +141,12 @@ File → Stage 1: Metadata ─────────────────�
        │ Duration/resolution-based heuristics          │
        ─────────────────────────────────────────────────
             ↓
-       Stage 6: Execute ────────────────────────────────
-       │ Move TRASH → _cleanup/trash/YYYY/MM/          │
-       │ Move DOCUMENTS → _cleanup/documents/YYYY/MM/  │
+       Stage 6: Execute & Organize ─────────────────────
+       │ Move TRASH → _cleanup/trash/subcategory/      │
+       │ Move DOCUMENTS → _cleanup/docs/cat/YYYY/MM/   │
+       │ Organize KEEP → YYYY/MM/ by date              │
+       │ Respects existing subfolders                  │
        │ REVIEW items stay for manual review           │
-       │ KEEP items are not touched                    │
        ─────────────────────────────────────────────────
 ```
 
