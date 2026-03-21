@@ -6,6 +6,7 @@ Reports progress via a callback for WebSocket updates.
 import asyncio
 import logging
 import os
+import re
 import shutil
 from datetime import datetime
 from pathlib import Path
@@ -22,7 +23,7 @@ from models import (
 from services.scanner import (
     scan_directory, classify_metadata, compute_phash,
     find_duplicate_groups, analyze_quality, compute_file_hash,
-    VIDEO_EXTENSIONS,
+    extract_date, VIDEO_EXTENSIONS,
 )
 from services.vision import create_provider
 from services.thumbnails import generate_thumbnail, generate_video_thumbnail
@@ -639,6 +640,16 @@ class PipelineRunner:
         PhotoReason.VISION_DOCUMENT: "documents/otros",
     }
 
+    # Regex to detect if a path already has YYYY/MM structure
+    _ALREADY_ORGANIZED_RE = re.compile(r"[\\/]\d{4}[\\/]\d{2}[\\/]")
+
+    def _get_date_subdir(self, photo) -> str:
+        """Get YYYY/MM subdirectory for a photo using the extract_date priority chain."""
+        dt = extract_date(photo.date_taken, photo.filename, photo.path)
+        if dt:
+            return f"{dt.year}/{dt.month:02d}"
+        return "sin_fecha"
+
     async def _stage_execute(self, db: AsyncSession, job: Job):
         await self._wait_if_paused()
         job.current_stage = PipelineStage.EXECUTING
@@ -648,7 +659,7 @@ class PipelineRunner:
         source_dir = Path(job.source_dir)
         cleanup_dir = source_dir / "_cleanup"
 
-        # Move high-confidence trash and documents (NOT review — those stay for manual review)
+        # ── Phase 1: Move trash and documents to _cleanup ──
         result = await db.execute(
             select(Photo).where(
                 Photo.job_id == job.id,
@@ -665,7 +676,6 @@ class PipelineRunner:
             if self._cancelled:
                 return
 
-            # Determine subdirectory based on reason
             reason_subdir = self.REASON_SUBDIR.get(photo.reason, "trash/otros" if photo.action == PhotoAction.TRASH else "documents/otros")
             base_dir = cleanup_dir / reason_subdir
 
@@ -673,14 +683,7 @@ class PipelineRunner:
             if not src.exists():
                 continue
 
-            # Organize by year/month
-            try:
-                mtime = os.path.getmtime(photo.path)
-                dt = datetime.fromtimestamp(mtime)
-                sub_dir = f"{dt.year}/{dt.month:02d}"
-            except Exception:
-                sub_dir = "unknown"
-
+            sub_dir = self._get_date_subdir(photo)
             dst_dir = base_dir / sub_dir
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst = dst_dir / src.name
@@ -695,6 +698,7 @@ class PipelineRunner:
 
             try:
                 shutil.move(str(src), str(dst))
+                photo.path = str(dst)
                 photo.moved = True
                 moved += 1
             except Exception as e:
@@ -712,13 +716,89 @@ class PipelineRunner:
                     "errors": errors,
                 })
 
+        await db.commit()
+
+        # ── Phase 2: Organize KEEP photos by date ──
+        await self._emit("stage", {"stage": "organizing", "message": "Organizando fotos por fecha..."})
+
+        result = await db.execute(
+            select(Photo).where(
+                Photo.job_id == job.id,
+                Photo.action == PhotoAction.KEEP,
+            )
+        )
+        keep_photos = list(result.scalars().all())
+
+        organized = 0
+        for i, photo in enumerate(keep_photos):
+            await self._wait_if_paused()
+            if self._cancelled:
+                return
+
+            src = Path(photo.path)
+            if not src.exists():
+                continue
+
+            # Skip if already in YYYY/MM structure
+            try:
+                relative = src.relative_to(source_dir)
+            except ValueError:
+                continue
+
+            if self._ALREADY_ORGANIZED_RE.search(str(relative)):
+                continue
+
+            sub_dir = self._get_date_subdir(photo)
+
+            # Respect existing subfolders:
+            # Photos/Vacaciones/foto.jpg → Photos/2024/07/Vacaciones/foto.jpg
+            if len(relative.parts) > 1:
+                subfolder = str(relative.parent)
+                dst = source_dir / sub_dir / subfolder / relative.name
+            else:
+                dst = source_dir / sub_dir / relative.name
+
+            # Don't move to same location
+            if dst == src:
+                continue
+
+            dst.parent.mkdir(parents=True, exist_ok=True)
+
+            # Handle name conflicts
+            if dst.exists():
+                stem, suffix = dst.stem, dst.suffix
+                counter = 1
+                while dst.exists():
+                    dst = dst.parent / f"{stem}_{counter}{suffix}"
+                    counter += 1
+
+            try:
+                shutil.move(str(src), str(dst))
+                photo.path = str(dst)
+                photo.moved = True
+                organized += 1
+            except Exception as e:
+                logger.error(f"Failed to organize {src}: {e}")
+                errors += 1
+
+            if i % 100 == 0:
+                await db.flush()
+                await self._persist_stage_progress(db, job, i, len(keep_photos))
+                await self._emit_with_counts(db, "progress", {
+                    "stage": "organizing",
+                    "current": i,
+                    "total": len(keep_photos),
+                    "organized": organized,
+                    "errors": errors,
+                })
+
         job.stage_progress = 0
         job.stage_total = 0
         await db.commit()
         await self._update_stats(db, job)
         await db.commit()
         await self._emit_with_counts(db, "stage_complete", {
-            "stage": "executing", "moved": moved, "errors": errors,
+            "stage": "executing", "moved": moved, "organized": organized, "errors": errors,
         })
 
     async def _update_stats(self, db: AsyncSession, job: Job):

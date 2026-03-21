@@ -6,6 +6,7 @@ Adapted from cleanup.py with improvements.
 import os
 import re
 from collections import defaultdict
+from datetime import datetime
 from pathlib import Path
 from typing import Optional
 
@@ -329,3 +330,59 @@ def compute_file_hash(filepath: str) -> Optional[str]:
         return h.hexdigest()
     except Exception:
         return None
+
+
+# ── Date extraction for organizing by YYYY/MM ──
+
+# Patterns: IMG_20250315_143022, VID-20250112-WA0034, PXL_20231201_...,
+# Screenshot_2024-03-15, 20250315_143022, signal-2024-03-15, FB_IMG_1710500000
+_FILENAME_DATE_PATTERNS = [
+    re.compile(r"(?:IMG|VID|PXL|PANO|MVIMG|SAVE|BURST)[_-](\d{4})(\d{2})(\d{2})"),
+    re.compile(r"(?:Screenshot|Captura|Screen[\s_]?Shot)[_-](\d{4})-?(\d{2})-?(\d{2})"),
+    re.compile(r"signal-(\d{4})-(\d{2})-(\d{2})"),
+    re.compile(r"^(\d{4})(\d{2})(\d{2})[_-](\d{2})"),  # 20250315_143022
+]
+
+
+def extract_date(date_taken_str: Optional[str], filename: str, filepath: str) -> Optional[datetime]:
+    """
+    Extract date from a photo using priority chain:
+    1. EXIF DateTimeOriginal string
+    2. Filename patterns
+    3. File modification time (mtime)
+    Returns datetime or None if all methods fail.
+    """
+    # 1. EXIF DateTimeOriginal
+    if date_taken_str:
+        dt = _parse_exif_date(date_taken_str)
+        if dt:
+            return dt
+
+    # 2. Filename patterns
+    stem = Path(filename).stem
+    for pattern in _FILENAME_DATE_PATTERNS:
+        m = pattern.search(stem)
+        if m:
+            try:
+                year, month, day = int(m.group(1)), int(m.group(2)), int(m.group(3))
+                if 1990 <= year <= 2100 and 1 <= month <= 12 and 1 <= day <= 31:
+                    return datetime(year, month, day)
+            except (ValueError, IndexError):
+                continue
+
+    # 3. File modification time
+    try:
+        mtime = os.path.getmtime(filepath)
+        return datetime.fromtimestamp(mtime)
+    except Exception:
+        return None
+
+
+def _parse_exif_date(date_str: str) -> Optional[datetime]:
+    """Parse EXIF date string like '2023:12:15 14:30:45' or '2023-12-15T14:30:45'."""
+    for fmt in ("%Y:%m:%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S", "%Y-%m-%d %H:%M:%S"):
+        try:
+            return datetime.strptime(date_str.strip(), fmt)
+        except (ValueError, AttributeError):
+            continue
+    return None
