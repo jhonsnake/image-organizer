@@ -76,7 +76,7 @@ def scan_directory(source_dir: str) -> list[dict]:
         # Skip cleanup and Synology thumbnail dirs
         dirs[:] = [
             d for d in dirs
-            if not d.startswith(".") and d != "@eaDir" and d != "_cleanup"
+            if not d.startswith(".") and d not in ("@eaDir", "_cleanup", "Documentos")
         ]
         for fname in filenames:
             ext = Path(fname).suffix.lower()

@@ -618,26 +618,29 @@ class PipelineRunner:
 
         await db.commit()
 
-    # ── Reason → subdirectory mapping ──
-    REASON_SUBDIR = {
-        # Trash subcategories
-        PhotoReason.VISION_SCREENSHOT: "trash/screenshots",
-        PhotoReason.SCREENSHOT_FILENAME: "trash/screenshots",
-        PhotoReason.SCREENSHOT_DIMS_NO_EXIF: "trash/screenshots",
-        PhotoReason.VISION_MEME: "trash/memes",
-        PhotoReason.MESSAGING_IMAGE: "trash/whatsapp",
-        PhotoReason.WHATSAPP_STICKER: "trash/whatsapp",
-        PhotoReason.WHATSAPP_STATUS: "trash/whatsapp",
-        PhotoReason.VISION_ACCIDENTAL: "trash/accidental",
-        PhotoReason.BLURRY: "trash/accidental",
-        PhotoReason.TOO_DARK: "trash/accidental",
-        PhotoReason.OVEREXPOSED: "trash/accidental",
-        PhotoReason.TINY_IMAGE: "trash/otros",
-        PhotoReason.SMALL_FILE: "trash/otros",
-        PhotoReason.DUPLICATE: "trash/otros",
-        # Document subcategories
-        PhotoReason.VISION_INVOICE: "documents/facturas",
-        PhotoReason.VISION_DOCUMENT: "documents/otros",
+    # ── Trash reason → subdirectory mapping (inside _cleanup/) ──
+    TRASH_SUBDIR = {
+        PhotoReason.VISION_SCREENSHOT: "screenshots",
+        PhotoReason.SCREENSHOT_FILENAME: "screenshots",
+        PhotoReason.SCREENSHOT_DIMS_NO_EXIF: "screenshots",
+        PhotoReason.VISION_MEME: "memes",
+        PhotoReason.MESSAGING_IMAGE: "whatsapp",
+        PhotoReason.WHATSAPP_STICKER: "whatsapp",
+        PhotoReason.WHATSAPP_STATUS: "whatsapp",
+        PhotoReason.VISION_ACCIDENTAL: "accidental",
+        PhotoReason.BLURRY: "accidental",
+        PhotoReason.TOO_DARK: "accidental",
+        PhotoReason.OVEREXPOSED: "accidental",
+        PhotoReason.TINY_IMAGE: "otros",
+        PhotoReason.SMALL_FILE: "otros",
+        PhotoReason.DUPLICATE: "otros",
+    }
+
+    # ── Document reason → subdirectory mapping (inside Documentos/) ──
+    DOC_SUBDIR = {
+        PhotoReason.VISION_INVOICE: "facturas",
+        PhotoReason.VISION_DOCUMENT: "otros",
+        PhotoReason.MANUAL_DOCUMENTS: "otros",
     }
 
     # Regex to detect if a path already has YYYY/MM structure
@@ -659,36 +662,35 @@ class PipelineRunner:
         source_dir = Path(job.source_dir)
         cleanup_dir = source_dir / "_cleanup"
 
-        # ── Phase 1: Move trash and documents to _cleanup ──
+        # ── Phase 1a: Move TRASH to _cleanup/trash/ ──
         result = await db.execute(
             select(Photo).where(
                 Photo.job_id == job.id,
-                Photo.action.in_([PhotoAction.TRASH, PhotoAction.DOCUMENTS]),
+                Photo.action == PhotoAction.TRASH,
                 Photo.moved == False,
             )
         )
-        to_move = list(result.scalars().all())
+        trash_photos = list(result.scalars().all())
 
         moved = 0
         errors = 0
-        for i, photo in enumerate(to_move):
+        total_phase1 = len(trash_photos)
+
+        for i, photo in enumerate(trash_photos):
             await self._wait_if_paused()
             if self._cancelled:
                 return
 
-            reason_subdir = self.REASON_SUBDIR.get(photo.reason, "trash/otros" if photo.action == PhotoAction.TRASH else "documents/otros")
-            base_dir = cleanup_dir / reason_subdir
-
+            trash_subdir = self.TRASH_SUBDIR.get(photo.reason, "otros")
             src = Path(photo.path)
             if not src.exists():
                 continue
 
             sub_dir = self._get_date_subdir(photo)
-            dst_dir = base_dir / sub_dir
+            dst_dir = cleanup_dir / "trash" / trash_subdir / sub_dir
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst = dst_dir / src.name
 
-            # Handle name conflicts
             if dst.exists():
                 stem, suffix = dst.stem, dst.suffix
                 counter = 1
@@ -707,14 +709,57 @@ class PipelineRunner:
 
             if i % 50 == 0:
                 await db.flush()
-                await self._persist_stage_progress(db, job, i, len(to_move))
+                await self._persist_stage_progress(db, job, i, total_phase1)
                 await self._emit_with_counts(db, "progress", {
                     "stage": "executing",
                     "current": i,
-                    "total": len(to_move),
+                    "total": total_phase1,
                     "moved": moved,
                     "errors": errors,
                 })
+
+        await db.commit()
+
+        # ── Phase 1b: Move DOCUMENTS to source_dir/Documentos/cat/YYYY/MM/ ──
+        result = await db.execute(
+            select(Photo).where(
+                Photo.job_id == job.id,
+                Photo.action == PhotoAction.DOCUMENTS,
+                Photo.moved == False,
+            )
+        )
+        doc_photos = list(result.scalars().all())
+
+        for i, photo in enumerate(doc_photos):
+            await self._wait_if_paused()
+            if self._cancelled:
+                return
+
+            doc_subdir = self.DOC_SUBDIR.get(photo.reason, "otros")
+            src = Path(photo.path)
+            if not src.exists():
+                continue
+
+            sub_dir = self._get_date_subdir(photo)
+            dst_dir = source_dir / "Documentos" / doc_subdir / sub_dir
+            dst_dir.mkdir(parents=True, exist_ok=True)
+            dst = dst_dir / src.name
+
+            if dst.exists():
+                stem, suffix = dst.stem, dst.suffix
+                counter = 1
+                while dst.exists():
+                    dst = dst_dir / f"{stem}_{counter}{suffix}"
+                    counter += 1
+
+            try:
+                shutil.move(str(src), str(dst))
+                photo.path = str(dst)
+                photo.moved = True
+                moved += 1
+            except Exception as e:
+                logger.error(f"Failed to move {src}: {e}")
+                errors += 1
 
         await db.commit()
 
