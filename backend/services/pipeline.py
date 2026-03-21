@@ -21,10 +21,11 @@ from models import (
 )
 from services.scanner import (
     scan_directory, classify_metadata, compute_phash,
-    find_duplicate_groups, analyze_quality,
+    find_duplicate_groups, analyze_quality, compute_file_hash,
+    VIDEO_EXTENSIONS,
 )
 from services.vision import create_provider
-from services.thumbnails import generate_thumbnail
+from services.thumbnails import generate_thumbnail, generate_video_thumbnail
 
 logger = logging.getLogger(__name__)
 
@@ -112,6 +113,11 @@ class PipelineRunner:
                     if self._cancelled:
                         return
 
+                    # Classify videos by metadata (no LLM)
+                    await self._stage_video_classify(db, job)
+                    if self._cancelled:
+                        return
+
                     await self._stage_execute(db, job)
                     if self._cancelled:
                         return
@@ -156,6 +162,7 @@ class PipelineRunner:
                 filename=f["filename"],
                 extension=f["extension"],
                 size_bytes=f["size_bytes"],
+                media_type=f.get("media_type", "image"),
             )
             db.add(photo)
 
@@ -182,12 +189,13 @@ class PipelineRunner:
         await db.commit()
         await self._emit("stage", {"stage": "metadata", "message": "Analizando metadata..."})
 
-        # Skip photos already processed by metadata (stage_decided >= 1)
+        # Skip photos already processed by metadata (stage_decided >= 1); skip videos
         result = await db.execute(
             select(Photo).where(
                 Photo.job_id == job.id,
                 Photo.action == PhotoAction.KEEP,
                 Photo.stage_decided < 1,
+                Photo.media_type == "image",
             )
         )
         photos = list(result.scalars().all())
@@ -256,8 +264,12 @@ class PipelineRunner:
         )
         photos = list(result.scalars().all())
 
-        # Compute hashes — skip photos that already have a phash (resume)
-        need_hash = [p for p in photos if not p.phash]
+        # Split images and videos for different hash strategies
+        image_photos = [p for p in photos if p.media_type != "video"]
+        video_photos = [p for p in photos if p.media_type == "video"]
+
+        # Compute pHash for images — skip photos that already have a phash (resume)
+        need_hash = [p for p in image_photos if not p.phash]
         for i, photo in enumerate(need_hash):
             await self._wait_if_paused()
             if self._cancelled:
@@ -271,15 +283,45 @@ class PipelineRunner:
                 await self._emit("progress", {
                     "stage": "dedup",
                     "current": i,
-                    "total": len(need_hash),
+                    "total": len(need_hash) + len(video_photos),
                     "substage": "hashing",
+                })
+
+        # Compute SHA256 for videos
+        need_video_hash = [p for p in video_photos if not p.phash]
+        for i, photo in enumerate(need_video_hash):
+            await self._wait_if_paused()
+            if self._cancelled:
+                return
+            h = await asyncio.to_thread(compute_file_hash, photo.path)
+            if h:
+                photo.phash = h  # Reuse phash column for file hash
+
+            if i % 20 == 0:
+                await self._persist_stage_progress(db, job, len(need_hash) + i, len(need_hash) + len(need_video_hash))
+                await self._emit("progress", {
+                    "stage": "dedup",
+                    "current": len(need_hash) + i,
+                    "total": len(need_hash) + len(need_video_hash),
+                    "substage": "hashing_videos",
                 })
 
         await db.flush()
 
-        # Find groups
-        photo_dicts = [{"path": p.path, "phash": p.phash, "size_bytes": p.size_bytes} for p in photos]
+        # Find groups for images (perceptual hash)
+        photo_dicts = [{"path": p.path, "phash": p.phash, "size_bytes": p.size_bytes} for p in image_photos]
         groups = await asyncio.to_thread(find_duplicate_groups, photo_dicts, job.hash_threshold or 8)
+
+        # Find exact-match duplicates for videos (same SHA256)
+        video_hash_map: dict[str, list[int]] = {}
+        for vi, vp in enumerate(video_photos):
+            if vp.phash:
+                video_hash_map.setdefault(vp.phash, []).append(vi)
+        for indices in video_hash_map.values():
+            if len(indices) >= 2:
+                # Remap to global photo list indices
+                global_indices = [photos.index(video_photos[i]) for i in indices]
+                groups.append(global_indices)
 
         dup_count = 0
         for group in groups:
@@ -307,12 +349,13 @@ class PipelineRunner:
         await db.commit()
         await self._emit("stage", {"stage": "quality", "message": "Analizando calidad..."})
 
-        # Skip photos already processed by quality (stage_decided >= 3)
+        # Skip photos already processed by quality (stage_decided >= 3); skip videos
         result = await db.execute(
             select(Photo).where(
                 Photo.job_id == job.id,
                 Photo.action == PhotoAction.KEEP,
                 Photo.stage_decided < 3,
+                Photo.media_type == "image",
             )
         )
         photos = list(result.scalars().all())
@@ -365,12 +408,14 @@ class PipelineRunner:
         job.current_stage = PipelineStage.VISION
         await db.commit()
 
-        # Process KEEP/REVIEW that haven't been through vision yet (stage_decided < 4)
+        # Process KEEP/REVIEW images that haven't been through vision yet (stage_decided < 4)
+        # Videos skip vision — they're handled by the video classifier
         result = await db.execute(
             select(Photo).where(
                 Photo.job_id == job.id,
                 Photo.action.in_([PhotoAction.KEEP, PhotoAction.REVIEW]),
                 Photo.stage_decided < 4,
+                Photo.media_type == "image",
             )
         )
         photos = list(result.scalars().all())
@@ -460,6 +505,9 @@ class PipelineRunner:
                 elif cat == "meme":
                     photo.action = PhotoAction.TRASH
                     photo.reason = PhotoReason.VISION_MEME
+                elif cat == "invoice":
+                    photo.action = PhotoAction.DOCUMENTS
+                    photo.reason = PhotoReason.VISION_INVOICE
                 elif cat == "document":
                     photo.action = PhotoAction.DOCUMENTS
                     photo.reason = PhotoReason.VISION_DOCUMENT
@@ -508,6 +556,89 @@ class PipelineRunner:
             "stage": "vision", "classified": classified, "total": len(photos),
         })
 
+    async def _stage_video_classify(self, db: AsyncSession, job: Job):
+        """Classify videos using metadata (no LLM needed)."""
+        await self._wait_if_paused()
+
+        result = await db.execute(
+            select(Photo).where(
+                Photo.job_id == job.id,
+                Photo.media_type == "video",
+                Photo.action == PhotoAction.KEEP,
+                Photo.stage_decided < 4,
+            )
+        )
+        videos = list(result.scalars().all())
+
+        if not videos:
+            return
+
+        await self._emit("stage", {"stage": "vision", "message": f"Clasificando {len(videos)} videos por metadata..."})
+
+        from services.video_classifier import classify_video
+
+        classified = 0
+        for i, photo in enumerate(videos):
+            await self._wait_if_paused()
+            if self._cancelled:
+                return
+
+            result_cls = await asyncio.to_thread(classify_video, photo.path, photo.filename, photo.size_bytes)
+            if result_cls:
+                action, reason, confidence, meta = result_cls
+                photo.action = action
+                photo.reason = reason
+                photo.confidence = confidence
+                photo.stage_decided = 4
+                photo.duration = meta.get("duration")
+                photo.width = meta.get("width", 0)
+                photo.height = meta.get("height", 0)
+                photo.video_codec = meta.get("codec")
+                classified += 1
+
+                # Generate video thumbnail for review items
+                if photo.action == PhotoAction.REVIEW:
+                    thumb = await asyncio.to_thread(
+                        generate_video_thumbnail,
+                        photo.path,
+                        settings.thumbnail_dir,
+                    )
+                    if thumb:
+                        photo.thumbnail_path = thumb
+
+            if i % 10 == 0:
+                await db.flush()
+                await self._emit_with_counts(db, "progress", {
+                    "stage": "vision",
+                    "current": i,
+                    "total": len(videos),
+                    "substage": "video_classify",
+                })
+
+        await db.commit()
+
+    # ── Reason → subdirectory mapping ──
+    REASON_SUBDIR = {
+        # Trash subcategories
+        PhotoReason.VISION_SCREENSHOT: "trash/screenshots",
+        PhotoReason.SCREENSHOT_FILENAME: "trash/screenshots",
+        PhotoReason.SCREENSHOT_DIMS_NO_EXIF: "trash/screenshots",
+        PhotoReason.VISION_MEME: "trash/memes",
+        PhotoReason.MESSAGING_IMAGE: "trash/whatsapp",
+        PhotoReason.WHATSAPP_STICKER: "trash/whatsapp",
+        PhotoReason.WHATSAPP_STATUS: "trash/whatsapp",
+        PhotoReason.VISION_ACCIDENTAL: "trash/accidental",
+        PhotoReason.BLURRY: "trash/accidental",
+        PhotoReason.TOO_DARK: "trash/accidental",
+        PhotoReason.OVEREXPOSED: "trash/accidental",
+        PhotoReason.TINY_IMAGE: "trash/otros",
+        PhotoReason.SMALL_FILE: "trash/otros",
+        PhotoReason.DUPLICATE: "trash/otros",
+        # Document subcategories
+        PhotoReason.VISION_INVOICE: "documents/facturas",
+        PhotoReason.VISION_DOCUMENT: "documents/otros",
+    }
+
     async def _stage_execute(self, db: AsyncSession, job: Job):
         await self._wait_if_paused()
         job.current_stage = PipelineStage.EXECUTING
@@ -516,16 +647,6 @@ class PipelineRunner:
 
         source_dir = Path(job.source_dir)
         cleanup_dir = source_dir / "_cleanup"
-
-        action_dirs = {
-            PhotoAction.TRASH: cleanup_dir / "trash",
-            PhotoAction.DOCUMENTS: cleanup_dir / "documents",
-        }
-
-        # Create staging dirs
-        for d in action_dirs.values():
-            d.mkdir(parents=True, exist_ok=True)
-        (cleanup_dir / "review").mkdir(parents=True, exist_ok=True)
 
         # Move high-confidence trash and documents (NOT review — those stay for manual review)
         result = await db.execute(
@@ -544,9 +665,9 @@ class PipelineRunner:
             if self._cancelled:
                 return
 
-            target_dir = action_dirs.get(photo.action)
-            if not target_dir:
-                continue
+            # Determine subdirectory based on reason
+            reason_subdir = self.REASON_SUBDIR.get(photo.reason, "trash/otros" if photo.action == PhotoAction.TRASH else "documents/otros")
+            base_dir = cleanup_dir / reason_subdir
 
             src = Path(photo.path)
             if not src.exists():
@@ -560,7 +681,7 @@ class PipelineRunner:
             except Exception:
                 sub_dir = "unknown"
 
-            dst_dir = target_dir / sub_dir
+            dst_dir = base_dir / sub_dir
             dst_dir.mkdir(parents=True, exist_ok=True)
             dst = dst_dir / src.name
 

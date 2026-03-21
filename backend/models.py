@@ -44,6 +44,10 @@ class PhotoReason(str, enum.Enum):
     VISION_ACCIDENTAL = "vision_accidental"
     VISION_AMBIGUOUS = "vision_ambiguous"
     VISION_PHOTO = "vision_photo"
+    VISION_INVOICE = "vision_invoice"
+    # WhatsApp specific
+    WHATSAPP_STICKER = "whatsapp_sticker"
+    WHATSAPP_STATUS = "whatsapp_status"
     # Fallback
     UNCLASSIFIED = "unclassified"
     LEGITIMATE = "legitimate"
@@ -137,6 +141,7 @@ class Photo(Base):
     path = Column(String(2048), nullable=False)
     filename = Column(String(512), nullable=False)
     extension = Column(String(16))
+    media_type = Column(String(16), default="image")  # "image" | "video"
     size_bytes = Column(Integer, default=0)
     width = Column(Integer, default=0)
     height = Column(Integer, default=0)
@@ -158,6 +163,9 @@ class Photo(Base):
     # Vision
     vision_label = Column(String(64), nullable=True)
     vision_confidence = Column(Float, default=0.0)
+    # Video metadata
+    duration = Column(Float, nullable=True)  # seconds
+    video_codec = Column(String(32), nullable=True)
     # State
     moved = Column(Boolean, default=False)
     thumbnail_path = Column(String(1024), nullable=True)

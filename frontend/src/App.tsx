@@ -7,6 +7,7 @@ import Review from './pages/Review';
 import HistoryPage from './pages/History';
 import Providers from './pages/Providers';
 import Watcher from './pages/Watcher';
+import SpaceAnalysis from './pages/SpaceAnalysis';
 import { useWebSocket } from './hooks/useWebSocket';
 import type { WsMessage } from './hooks/useWebSocket';
 
@@ -77,6 +78,7 @@ export default function App() {
             <Route path="/history" element={<HistoryPage />} />
             <Route path="/providers" element={<Providers />} />
             <Route path="/watcher" element={<Watcher />} />
+            <Route path="/analysis/:jobId" element={<SpaceAnalysis />} />
           </Routes>
         </main>
       </div>

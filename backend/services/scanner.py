@@ -27,6 +27,10 @@ IMAGE_EXTENSIONS = {
     ".tiff", ".tif", ".heic", ".heif",
 }
 
+VIDEO_EXTENSIONS = {".mp4", ".mov", ".avi", ".mkv", ".3gp", ".webm", ".m4v"}
+
+ALL_MEDIA_EXTENSIONS = IMAGE_EXTENSIONS | VIDEO_EXTENSIONS
+
 # ── Screenshot detection ──
 
 SCREEN_RATIOS = [
@@ -43,10 +47,13 @@ SCREENSHOT_FILENAME_RE = [
     re.compile(r"^scr_\d+", re.IGNORECASE),
 ]
 
-SOCIAL_MEDIA_RE = [
-    re.compile(r"^IMG-\d{8}-WA\d+", re.IGNORECASE),
-    re.compile(r"^VID-\d{8}-WA\d+", re.IGNORECASE),
-    re.compile(r"^STK-\d{8}-WA\d+", re.IGNORECASE),
+# WhatsApp-specific patterns (handled individually for granular classification)
+WHATSAPP_STICKER_RE = re.compile(r"^STK-\d{8}-WA\d+", re.IGNORECASE)
+WHATSAPP_IMG_RE = re.compile(r"^IMG-\d{8}-WA\d+", re.IGNORECASE)
+WHATSAPP_VID_RE = re.compile(r"^VID-\d{8}-WA\d+", re.IGNORECASE)
+
+# Other social media — still auto-trash at 0.85
+OTHER_SOCIAL_MEDIA_RE = [
     re.compile(r"^FB_IMG_\d+", re.IGNORECASE),
     re.compile(r"^received_\d+", re.IGNORECASE),
     re.compile(r"^signal-\d{4}-\d{2}-\d{2}", re.IGNORECASE),
@@ -61,7 +68,7 @@ MEME_RE = [
 
 
 def scan_directory(source_dir: str) -> list[dict]:
-    """Walk source directory and return list of file info dicts."""
+    """Walk source directory and return list of file info dicts (images + videos)."""
     files = []
     source = Path(source_dir)
     for root, dirs, filenames in os.walk(source):
@@ -72,8 +79,9 @@ def scan_directory(source_dir: str) -> list[dict]:
         ]
         for fname in filenames:
             ext = Path(fname).suffix.lower()
-            if ext in IMAGE_EXTENSIONS:
+            if ext in ALL_MEDIA_EXTENSIONS:
                 fpath = os.path.join(root, fname)
+                media_type = "video" if ext in VIDEO_EXTENSIONS else "image"
                 try:
                     stat = os.stat(fpath)
                     files.append({
@@ -81,6 +89,7 @@ def scan_directory(source_dir: str) -> list[dict]:
                         "filename": fname,
                         "extension": ext,
                         "size_bytes": stat.st_size,
+                        "media_type": media_type,
                     })
                 except OSError:
                     pass
@@ -92,6 +101,7 @@ def scan_directory(source_dir: str) -> list[dict]:
 def classify_metadata(photo: dict, min_file_size: int = 15000) -> Optional[tuple[PhotoAction, PhotoReason, float]]:
     """Try to classify based on filename, EXIF, dimensions. Returns (action, reason, confidence) or None."""
     fname = Path(photo["filename"]).stem
+    fpath = photo["path"]
 
     # Too small file
     if photo["size_bytes"] < min_file_size:
@@ -102,8 +112,24 @@ def classify_metadata(photo: dict, min_file_size: int = 15000) -> Optional[tuple
         if pattern.search(fname):
             return PhotoAction.TRASH, PhotoReason.SCREENSHOT_FILENAME, 0.95
 
-    # Social media / messaging
-    for pattern in SOCIAL_MEDIA_RE:
+    # WhatsApp Status path detection
+    if ".Statuses" in fpath or "/.Statuses/" in fpath:
+        return PhotoAction.TRASH, PhotoReason.WHATSAPP_STATUS, 0.95
+
+    # WhatsApp stickers — always trash
+    if WHATSAPP_STICKER_RE.search(fname):
+        return PhotoAction.TRASH, PhotoReason.WHATSAPP_STICKER, 0.95
+
+    # WhatsApp images — let through to vision stage (LLM decides personal vs junk)
+    if WHATSAPP_IMG_RE.search(fname):
+        return None  # Skip metadata classification, let vision handle it
+
+    # WhatsApp videos — handled by video classifier later
+    if WHATSAPP_VID_RE.search(fname):
+        return None  # Skip, video_classifier will handle
+
+    # Other social media / messaging
+    for pattern in OTHER_SOCIAL_MEDIA_RE:
         if pattern.search(fname):
             return PhotoAction.TRASH, PhotoReason.MESSAGING_IMAGE, 0.85
 
@@ -290,3 +316,16 @@ def analyze_quality(
         return None
 
     return None
+
+
+def compute_file_hash(filepath: str) -> Optional[str]:
+    """Compute SHA256 hash of a file (for video dedup)."""
+    import hashlib
+    try:
+        h = hashlib.sha256()
+        with open(filepath, "rb") as f:
+            for chunk in iter(lambda: f.read(8192), b""):
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return None

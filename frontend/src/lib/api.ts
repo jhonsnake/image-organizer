@@ -137,6 +137,10 @@ export const api = {
   getWatcherEvents: (limit = 50) =>
     request<WatcherEvent[]>(`/api/watcher/events?limit=${limit}`),
   getWatcherStats: () => request<{ total: number; processed: number; pending: number }>('/api/watcher/events/stats'),
+
+  // ── Analysis ──
+  getSpaceBreakdown: (jobId: number) =>
+    request<SpaceBreakdown>(`/api/analysis/${jobId}/space-breakdown`),
 };
 
 // ── Types ──
@@ -176,6 +180,7 @@ export interface ReviewPhoto {
   path: string;
   filename: string;
   extension: string | null;
+  media_type: 'image' | 'video';
   size_bytes: number;
   width: number;
   height: number;
@@ -189,6 +194,70 @@ export interface ReviewPhoto {
   brightness: number;
   duplicate_group: string | null;
   thumbnail_path: string | null;
+  duration: number | null;
+  video_codec: string | null;
+}
+
+// ── Space Analysis ──
+
+export interface SpaceBreakdown {
+  job_id: number;
+  total_files: number;
+  total_size_bytes: number;
+  recoverable_bytes: number;
+  by_reason: Record<string, { count: number; size_bytes: number; action: string }>;
+  by_action: Record<string, { count: number; size_bytes: number }>;
+  by_media_type: Record<string, { count: number; size_bytes: number }>;
+  recommendations: SpaceRecommendation[];
+  top_large_files: LargeFile[];
+}
+
+export interface SpaceRecommendation {
+  reason: string;
+  count: number;
+  size_bytes: number;
+  moved: number;
+}
+
+export interface LargeFile {
+  id: number;
+  filename: string;
+  size_bytes: number;
+  reason: string;
+  media_type: string;
+  thumbnail_path: string | null;
+}
+
+// ── Reason labels in Spanish ──
+
+export const REASON_LABELS: Record<string, string> = {
+  screenshot_filename: 'Screenshot (nombre)',
+  screenshot_dims_no_exif: 'Screenshot (dimensiones)',
+  messaging_image: 'Imagen de mensajeria',
+  tiny_image: 'Imagen muy pequena',
+  small_file: 'Archivo muy pequeno',
+  duplicate: 'Duplicado',
+  blurry: 'Borrosa',
+  too_dark: 'Muy oscura',
+  overexposed: 'Sobreexpuesta',
+  vision_screenshot: 'Screenshot (IA)',
+  vision_meme: 'Meme',
+  vision_document: 'Documento',
+  vision_invoice: 'Factura/Recibo',
+  vision_accidental: 'Foto accidental',
+  vision_ambiguous: 'Ambigua',
+  vision_photo: 'Foto personal',
+  whatsapp_sticker: 'Sticker WhatsApp',
+  whatsapp_status: 'Estado WhatsApp',
+  unclassified: 'Sin clasificar',
+  legitimate: 'Legitima',
+  manual_keep: 'Mantener (manual)',
+  manual_trash: 'Basura (manual)',
+  manual_documents: 'Documento (manual)',
+};
+
+export function reasonLabel(reason: string): string {
+  return REASON_LABELS[reason] || reason.replace(/_/g, ' ');
 }
 
 // ── V2 Types ──

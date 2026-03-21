@@ -113,6 +113,24 @@ async def _migrate_db():
         if migrations:
             await db.commit()
 
+        # Check photos table for new columns
+        result = await db.execute(text("PRAGMA table_info(photos)"))
+        photo_cols = {row[1] for row in result.fetchall()}
+
+        photo_migrations = []
+        if "media_type" not in photo_cols:
+            photo_migrations.append("ALTER TABLE photos ADD COLUMN media_type VARCHAR(16) DEFAULT 'image'")
+        if "duration" not in photo_cols:
+            photo_migrations.append("ALTER TABLE photos ADD COLUMN duration FLOAT")
+        if "video_codec" not in photo_cols:
+            photo_migrations.append("ALTER TABLE photos ADD COLUMN video_codec VARCHAR(32)")
+
+        for sql in photo_migrations:
+            await db.execute(text(sql))
+            logger.info(f"Migration: {sql}")
+        if photo_migrations:
+            await db.commit()
+
 
 async def _recover_crashed_jobs():
     """Mark any RUNNING jobs as PAUSED on startup — they crashed with the server."""
@@ -181,12 +199,14 @@ from api.jobs import router as jobs_router
 from api.review import router as review_router
 from api.providers import router as providers_router
 from api.watcher import router as watcher_router
+from api.analysis import router as analysis_router
 
 app.include_router(config_router)
 app.include_router(jobs_router)
 app.include_router(review_router)
 app.include_router(providers_router)
 app.include_router(watcher_router)
+app.include_router(analysis_router)
 
 
 # ── WebSocket endpoint ──

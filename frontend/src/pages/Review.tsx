@@ -3,7 +3,7 @@ import {
   Trash2, Check, FileText, X, ChevronLeft, ChevronRight,
   ZoomIn, Loader2, Filter,
 } from 'lucide-react';
-import { api } from '../lib/api';
+import { api, reasonLabel } from '../lib/api';
 import type { Job, ReviewPhoto } from '../lib/api';
 
 export default function Review() {
@@ -264,13 +264,21 @@ function PhotoCard({
         <div className="absolute inset-0 bg-black/0 group-hover:bg-black/30 transition-all flex items-center justify-center">
           <ZoomIn className="w-6 h-6 text-white opacity-0 group-hover:opacity-80 transition-opacity" />
         </div>
+        {photo.media_type === 'video' && (
+          <span className="absolute top-1.5 right-1.5 bg-black/70 text-white text-[9px] px-1.5 py-0.5 rounded font-medium">
+            VIDEO{photo.duration ? ` ${Math.round(photo.duration)}s` : ''}
+          </span>
+        )}
       </div>
 
       {/* Info + actions */}
       <div className="p-1.5 space-y-1">
         <div className="text-[10px] text-gray-500 truncate">{photo.filename}</div>
         <div className="text-[10px] text-gray-600">
-          {photo.reason.replace(/_/g, ' ')} &middot; {(photo.confidence * 100).toFixed(0)}%
+          {reasonLabel(photo.reason)} &middot; {(photo.confidence * 100).toFixed(0)}%
+          {photo.media_type === 'video' && photo.size_bytes > 0 && (
+            <> &middot; {(photo.size_bytes / 1024 / 1024).toFixed(1)}MB</>
+          )}
         </div>
         <div className="flex gap-1">
           <button
@@ -341,8 +349,12 @@ function Lightbox({
             <div>
               <div className="text-sm text-gray-200">{photo.filename}</div>
               <div className="text-xs text-gray-500">
-                {photo.width}x{photo.height} &middot; {(photo.size_bytes / 1024).toFixed(0)}KB
-                &middot; {photo.reason.replace(/_/g, ' ')}
+                {photo.media_type === 'video' ? (
+                  <>{photo.duration ? `${Math.round(photo.duration)}s` : ''} &middot; {(photo.size_bytes / 1024 / 1024).toFixed(1)}MB</>
+                ) : (
+                  <>{photo.width}x{photo.height} &middot; {(photo.size_bytes / 1024).toFixed(0)}KB</>
+                )}
+                &middot; {reasonLabel(photo.reason)}
                 &middot; Confianza: {(photo.confidence * 100).toFixed(0)}%
               </div>
             </div>

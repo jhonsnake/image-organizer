@@ -1,7 +1,7 @@
 import { useState, useEffect, useMemo } from 'react';
 import { Pause, Play, Square, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
-import { api } from '../lib/api';
+import { api, reasonLabel } from '../lib/api';
 import type { Job, JobStats } from '../lib/api';
 import type { WsMessage } from '../hooks/useWebSocket';
 
@@ -181,7 +181,7 @@ export default function Progress({ latestMsg, messages }: Props) {
     return Object.entries(stats.by_reason)
       .sort((a, b) => b[1] - a[1])
       .slice(0, 10)
-      .map(([name, value]) => ({ name: name.replace(/_/g, ' '), value }));
+      .map(([name, value]) => ({ name: reasonLabel(name), value }));
   }, [stats]);
 
   const progressPct = progress.total > 0 ? Math.round((progress.current / progress.total) * 100) : 0;

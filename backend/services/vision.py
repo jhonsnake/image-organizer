@@ -23,11 +23,12 @@ Classify the image into EXACTLY ONE of these categories and respond with ONLY a 
 - "photo": A legitimate personal photograph (people, places, events, nature, pets, food, etc.)
 - "screenshot": A screen capture from a phone or computer
 - "meme": An internet meme, sticker, viral image, or image with overlaid text meant to be funny/shared
-- "document": A photographed document (receipt, invoice, ID, ticket, menu, handwritten note, etc.)
+- "invoice": A receipt, invoice, bill, ticket, boarding pass, or financial document
+- "document": A photographed document that is NOT an invoice (ID, menu, handwritten note, letter, etc.)
 - "accidental": An accidental photo (black, blurry pocket shot, floor, extremely dark/bright, finger over lens)
 
 Respond ONLY with this JSON format, nothing else:
-{"category": "photo|screenshot|meme|document|accidental", "confidence": 0.0-1.0}"""
+{"category": "photo|screenshot|meme|invoice|document|accidental", "confidence": 0.0-1.0}"""
 
 
 class VisionProvider(ABC):
@@ -418,7 +419,7 @@ def _parse_classification(text: str) -> Optional[dict]:
         confidence = float(data.get("confidence", 0.5))
         confidence = max(0.0, min(1.0, confidence))
 
-        valid_categories = {"photo", "screenshot", "meme", "document", "accidental"}
+        valid_categories = {"photo", "screenshot", "meme", "document", "invoice", "accidental"}
         if category not in valid_categories:
             logger.warning(f"Unknown category: {category}")
             return None
