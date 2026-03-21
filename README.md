@@ -6,10 +6,13 @@ to a `_cleanup` folder — **nothing is ever deleted automatically**.
 
 ## Features
 
-- **4-stage classification pipeline**: metadata analysis, perceptual hash deduplication, image quality analysis, AI vision classification
+- **5-stage classification pipeline**: metadata analysis, perceptual hash deduplication, image quality analysis, AI vision classification, and video classification
+- **Video support**: scans and classifies videos (WhatsApp clips, screen recordings, duplicates via SHA256), generates video thumbnails with ffmpeg
 - **Multi-provider AI support**: local (LM Studio, Ollama, vLLM) and cloud (Anthropic, Gemini, OpenAI) with automatic fallback
 - **Real-time progress**: WebSocket-based live updates during pipeline execution
-- **Manual review queue**: review uncertain classifications with thumbnail previews
+- **Space analysis**: per-job breakdown by category, media type, and reason with recovery recommendations and charts
+- **Manual review queue**: review uncertain classifications with thumbnail previews (images and videos)
+- **WhatsApp detection**: identifies stickers, statuses, and forwarded media by filename and path patterns
 - **Docker deployment**: single container, runs directly on your NAS
 - **Synology Photos compatible**: moves files without touching the Synology database
 
@@ -94,46 +97,55 @@ Synology NAS (Docker)
 ├── FastAPI backend (Python)
 │   ├── REST API + WebSocket
 │   ├── SQLite database
-│   └── Pipeline engine (5 stages)
+│   └── Pipeline engine (6 stages)
 └── React frontend (served as static files)
     ├── Dashboard — configure and start jobs
     ├── Progress — real-time pipeline monitoring
-    ├── Review — manual photo review queue
+    ├── Review — manual photo/video review queue
     ├── History — past job results
+    ├── Space Analysis — per-job storage breakdown and charts
     └── Providers — manage AI providers
 ```
 
 ## Pipeline Stages
 
 ```
-Image → Stage 1: Metadata ─────────────────────────────
-        │ Filename patterns (WhatsApp, Screenshot)     │
-        │ Screen dimensions + no camera EXIF           │ → ~30% classified
-        │ Tiny images (stickers, icons)                │
-        ────────────────────────────────────────────────
-             ↓ (unclassified)
-        Stage 2: Hash Deduplication ────────────────────
-        │ Perceptual hash with configurable tolerance  │ → ~10-15% more
-        │ Groups bursts, keeps the best one            │
-        ────────────────────────────────────────────────
-             ↓ (unclassified)
-        Stage 3: Quality Analysis ──────────────────────
-        │ Laplacian variance (blur detection)          │ → ~5-10% more
-        │ Extreme brightness (dark / overexposed)      │
-        ────────────────────────────────────────────────
-             ↓ (unclassified)
-        Stage 4: AI Vision ─────────────────────────────
-        │ Multi-provider with fallback                 │ → rest
-        │ Categories: photo, screenshot, meme,         │
-        │   document, accidental                       │
-        ────────────────────────────────────────────────
-             ↓
-        Stage 5: Execute ───────────────────────────────
-        │ Move TRASH → _cleanup/trash/YYYY/MM/         │
-        │ Move DOCUMENTS → _cleanup/documents/YYYY/MM/ │
-        │ REVIEW items stay for manual review          │
-        │ KEEP items are not touched                   │
-        ────────────────────────────────────────────────
+File → Stage 1: Metadata ──────────────────────────────
+       │ Filename patterns (WhatsApp, Screenshot)      │
+       │ Screen dimensions + no camera EXIF            │ → ~30% classified
+       │ Tiny images (stickers, icons)                 │
+       │ WhatsApp stickers/statuses                    │
+       ─────────────────────────────────────────────────
+            ↓ (unclassified)
+       Stage 2: Hash Deduplication ─────────────────────
+       │ Perceptual hash for images (configurable)     │ → ~10-15% more
+       │ SHA256 hash for videos (exact match)          │
+       │ Groups bursts, keeps the best one             │
+       ─────────────────────────────────────────────────
+            ↓ (unclassified)
+       Stage 3: Quality Analysis ───────────────────────
+       │ Laplacian variance (blur detection)           │ → ~5-10% more
+       │ Extreme brightness (dark / overexposed)       │
+       ─────────────────────────────────────────────────
+            ↓ (unclassified)
+       Stage 4: AI Vision ──────────────────────────────
+       │ Multi-provider with fallback                  │ → rest of images
+       │ Categories: photo, screenshot, meme,          │
+       │   document, invoice, accidental               │
+       ─────────────────────────────────────────────────
+            ↓
+       Stage 5: Video Classification ───────────────────
+       │ ffprobe metadata analysis (no LLM needed)     │ → videos
+       │ WhatsApp videos, screen recordings            │
+       │ Duration/resolution-based heuristics          │
+       ─────────────────────────────────────────────────
+            ↓
+       Stage 6: Execute ────────────────────────────────
+       │ Move TRASH → _cleanup/trash/YYYY/MM/          │
+       │ Move DOCUMENTS → _cleanup/documents/YYYY/MM/  │
+       │ REVIEW items stay for manual review           │
+       │ KEEP items are not touched                    │
+       ─────────────────────────────────────────────────
 ```
 
 ## Configuration
