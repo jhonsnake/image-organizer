@@ -220,6 +220,7 @@ async def _run_ai_reclassify(
                 select(Photo).where(Photo.id.in_(photo_ids))
             )
             photos = list(result.scalars().all())
+            state["total"] = len(photos)
 
             for i, photo in enumerate(photos):
                 # Check cancellation
@@ -227,6 +228,20 @@ async def _run_ai_reclassify(
                     _broadcast_ai("ai_reclassify_cancelled", {
                         "task_id": task_id, "job_id": job_id,
                         "processed": i, "total": len(photos),
+                        **_state_counts(state),
+                    })
+                    state["status"] = "cancelled"
+                    return
+
+                # Wait while paused
+                while state.get("paused") and not state.get("cancelled"):
+                    await asyncio.sleep(0.5)
+                # Re-check cancel after unpause
+                if state.get("cancelled"):
+                    _broadcast_ai("ai_reclassify_cancelled", {
+                        "task_id": task_id, "job_id": job_id,
+                        "processed": i, "total": len(photos),
+                        **_state_counts(state),
                     })
                     state["status"] = "cancelled"
                     return
@@ -234,6 +249,7 @@ async def _run_ai_reclassify(
                 # Skip videos
                 if photo.media_type == "video":
                     state["still_review"] += 1
+                    state["processed"] = i + 1
                     _broadcast_ai("ai_reclassify_progress", {
                         "task_id": task_id, "job_id": job_id,
                         "processed": i + 1, "total": len(photos),
@@ -244,6 +260,7 @@ async def _run_ai_reclassify(
                     })
                     continue
 
+                state["current_file"] = photo.filename
                 _broadcast_ai("ai_reclassify_progress", {
                     "task_id": task_id, "job_id": job_id,
                     "processed": i, "total": len(photos),
@@ -299,6 +316,7 @@ async def _run_ai_reclassify(
                 else:
                     state["still_review"] += 1
 
+                state["processed"] = i + 1
                 await db.commit()
 
                 _broadcast_ai("ai_reclassify_progress", {
@@ -405,12 +423,17 @@ async def reclassify_with_ai(
     _ai_tasks[task_id] = {
         "status": "running",
         "job_id": job_id,
+        "total": len(photo_ids),
+        "processed": 0,
+        "current_file": "",
+        "provider_used": provider_label,
         "classified": 0,
         "kept": 0,
         "trashed": 0,
         "documents": 0,
         "still_review": 0,
         "cancelled": False,
+        "paused": False,
     }
 
     # Launch background task
@@ -443,6 +466,50 @@ async def cancel_ai_reclassify(task_id: str):
         raise HTTPException(status_code=400, detail="La tarea ya termino")
     task["cancelled"] = True
     return {"ok": True}
+
+
+@router.post("/reclassify-ai/{task_id}/pause")
+async def pause_ai_reclassify(task_id: str):
+    """Pause a running AI reclassification task."""
+    task = _ai_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if task["status"] != "running":
+        raise HTTPException(status_code=400, detail="La tarea ya termino")
+    task["paused"] = True
+    _broadcast_ai("ai_reclassify_paused", {"task_id": task_id, "job_id": task["job_id"]})
+    return {"ok": True}
+
+
+@router.post("/reclassify-ai/{task_id}/resume")
+async def resume_ai_reclassify(task_id: str):
+    """Resume a paused AI reclassification task."""
+    task = _ai_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if task["status"] != "running":
+        raise HTTPException(status_code=400, detail="La tarea ya termino")
+    task["paused"] = False
+    _broadcast_ai("ai_reclassify_resumed", {"task_id": task_id, "job_id": task["job_id"]})
+    return {"ok": True}
+
+
+@router.get("/reclassify-ai/active")
+async def get_active_ai_task():
+    """Return the currently running/paused AI task, if any."""
+    for task_id, state in _ai_tasks.items():
+        if state["status"] == "running":
+            return {
+                "task_id": task_id,
+                "status": "paused" if state.get("paused") else "running",
+                "job_id": state["job_id"],
+                "total": state.get("total", 0),
+                "processed": state.get("processed", 0),
+                "current_file": state.get("current_file", ""),
+                "provider_used": state.get("provider_used", ""),
+                **_state_counts(state),
+            }
+    return None
 
 
 @router.get("/reclassify-ai/provider-info")

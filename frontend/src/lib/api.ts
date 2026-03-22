@@ -115,6 +115,15 @@ export const api = {
   cancelAiReclassify: (taskId: string) =>
     request<{ ok: boolean }>(`/api/review/reclassify-ai/${taskId}/cancel`, { method: 'POST' }),
 
+  pauseAiReclassify: (taskId: string) =>
+    request<{ ok: boolean }>(`/api/review/reclassify-ai/${taskId}/pause`, { method: 'POST' }),
+
+  resumeAiReclassify: (taskId: string) =>
+    request<{ ok: boolean }>(`/api/review/reclassify-ai/${taskId}/resume`, { method: 'POST' }),
+
+  getActiveAiTask: () =>
+    request<AiActiveTask | null>('/api/review/reclassify-ai/active'),
+
   getProviderInfo: () =>
     request<AiProviderInfo>('/api/review/reclassify-ai/provider-info'),
 
@@ -240,6 +249,21 @@ export interface AiProviderInfo {
   name: string | null;
   model: string | null;
   available: boolean;
+}
+
+export interface AiActiveTask {
+  task_id: string;
+  status: 'running' | 'paused';
+  job_id: number;
+  total: number;
+  processed: number;
+  current_file: string;
+  provider_used: string;
+  classified: number;
+  kept: number;
+  trashed: number;
+  documents: number;
+  still_review: number;
 }
 
 // ── Space Analysis ──

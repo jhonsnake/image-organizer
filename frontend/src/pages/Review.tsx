@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Trash2, Check, FileText, X, ChevronLeft, ChevronRight,
-  ZoomIn, Loader2, Filter, Sparkles, Ban,
+  ZoomIn, Loader2, Filter, Sparkles, Ban, Pause, Play,
 } from 'lucide-react';
 import { api, reasonLabel } from '../lib/api';
 import type { Job, ReviewPhoto, AiReclassifyProgress, AiProviderInfo } from '../lib/api';
@@ -19,7 +19,7 @@ interface AiProgressState {
   documents: number;
   stillReview: number;
   providerUsed: string;
-  status: 'running' | 'done' | 'cancelled' | 'error';
+  status: 'running' | 'paused' | 'done' | 'cancelled' | 'error';
   error?: string;
 }
 
@@ -59,6 +59,28 @@ export default function Review() {
     api.getProviderInfo().then(setProviderInfo).catch(() => {});
   }, []);
 
+  // Restore active AI task on mount (e.g. after tab switch)
+  useEffect(() => {
+    api.getActiveAiTask().then((task) => {
+      if (task) {
+        setAiProgress({
+          taskId: task.task_id,
+          jobId: task.job_id,
+          total: task.total,
+          processed: task.processed,
+          currentFile: task.current_file,
+          classified: task.classified,
+          kept: task.kept,
+          trashed: task.trashed,
+          documents: task.documents,
+          stillReview: task.still_review,
+          providerUsed: task.provider_used,
+          status: task.status,
+        });
+      }
+    }).catch(() => {});
+  }, []);
+
   // Load review photos
   const loadPhotos = useCallback(async () => {
     if (!selectedJobId) return;
@@ -75,6 +97,14 @@ export default function Review() {
   }, [selectedJobId, page, minConf, maxConf]);
 
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
+
+  // Auto-reload when current page empties (AI classified all visible photos)
+  useEffect(() => {
+    if (photos.length === 0 && !loading && aiProgress?.status === 'running' && totalCount > 0) {
+      const timer = setTimeout(() => loadPhotos(), 1000);
+      return () => clearTimeout(timer);
+    }
+  }, [photos.length, loading, aiProgress?.status, totalCount, loadPhotos]);
 
   // WebSocket for AI progress
   useEffect(() => {
@@ -107,6 +137,10 @@ export default function Review() {
           setAiProgress((prev) => prev ? { ...prev, status: 'done', processed: msg.total } : prev);
         } else if (msg.event === 'ai_reclassify_cancelled') {
           setAiProgress((prev) => prev ? { ...prev, status: 'cancelled' } : prev);
+        } else if (msg.event === 'ai_reclassify_paused') {
+          setAiProgress((prev) => prev ? { ...prev, status: 'paused' } : prev);
+        } else if (msg.event === 'ai_reclassify_resumed') {
+          setAiProgress((prev) => prev ? { ...prev, status: 'running' } : prev);
         } else if (msg.event === 'ai_reclassify_error') {
           setAiProgress((prev) => prev ? { ...prev, status: 'error', error: msg.error } : prev);
         }
@@ -195,6 +229,18 @@ export default function Review() {
   const cancelAi = async () => {
     if (aiProgress?.taskId) {
       try { await api.cancelAiReclassify(aiProgress.taskId); } catch { /* ignore */ }
+    }
+  };
+
+  const pauseAi = async () => {
+    if (aiProgress?.taskId) {
+      try { await api.pauseAiReclassify(aiProgress.taskId); } catch { /* ignore */ }
+    }
+  };
+
+  const resumeAi = async () => {
+    if (aiProgress?.taskId) {
+      try { await api.resumeAiReclassify(aiProgress.taskId); } catch { /* ignore */ }
     }
   };
 
@@ -292,6 +338,8 @@ export default function Review() {
         <AiProgressBanner
           progress={aiProgress}
           onCancel={cancelAi}
+          onPause={pauseAi}
+          onResume={resumeAi}
           onDismiss={dismissAi}
         />
       )}
@@ -412,14 +460,20 @@ export default function Review() {
 function AiProgressBanner({
   progress,
   onCancel,
+  onPause,
+  onResume,
   onDismiss,
 }: {
   progress: AiProgressState;
   onCancel: () => void;
+  onPause: () => void;
+  onResume: () => void;
   onDismiss: () => void;
 }) {
   const pct = progress.total > 0 ? (progress.processed / progress.total) * 100 : 0;
   const isRunning = progress.status === 'running';
+  const isPaused = progress.status === 'paused';
+  const isActive = isRunning || isPaused;
   const isDone = progress.status === 'done';
   const isCancelled = progress.status === 'cancelled';
   const isError = progress.status === 'error';
@@ -430,7 +484,9 @@ function AiProgressBanner({
       ? 'border-red-500/30'
       : isCancelled
         ? 'border-yellow-500/30'
-        : 'border-purple-500/30';
+        : isPaused
+          ? 'border-orange-500/30'
+          : 'border-purple-500/30';
 
   const bgColor = isDone
     ? 'bg-green-500/10'
@@ -438,7 +494,9 @@ function AiProgressBanner({
       ? 'bg-red-500/10'
       : isCancelled
         ? 'bg-yellow-500/10'
-        : 'bg-purple-500/10';
+        : isPaused
+          ? 'bg-orange-500/10'
+          : 'bg-purple-500/10';
 
   return (
     <div className={`${bgColor} border ${borderColor} rounded-lg p-4 space-y-3`}>
@@ -446,11 +504,13 @@ function AiProgressBanner({
       <div className="flex items-center justify-between">
         <div className="flex items-center gap-2">
           {isRunning && <Loader2 className="w-4 h-4 animate-spin text-purple-400" />}
+          {isPaused && <Pause className="w-4 h-4 text-orange-400" />}
           {isDone && <Check className="w-4 h-4 text-green-400" />}
           {isCancelled && <Ban className="w-4 h-4 text-yellow-400" />}
           {isError && <X className="w-4 h-4 text-red-400" />}
           <span className="font-medium text-sm">
             {isRunning && 'Clasificando con IA...'}
+            {isPaused && 'Clasificacion IA pausada'}
             {isDone && 'Clasificacion IA completada'}
             {isCancelled && 'Clasificacion IA cancelada'}
             {isError && 'Error en clasificacion IA'}
@@ -459,11 +519,21 @@ function AiProgressBanner({
         </div>
         <div className="flex items-center gap-2">
           {isRunning && (
+            <button onClick={onPause} className="btn-secondary text-xs flex items-center gap-1">
+              <Pause className="w-3 h-3" /> Pausar
+            </button>
+          )}
+          {isPaused && (
+            <button onClick={onResume} className="btn-primary text-xs flex items-center gap-1">
+              <Play className="w-3 h-3" /> Reanudar
+            </button>
+          )}
+          {isActive && (
             <button onClick={onCancel} className="btn-danger text-xs flex items-center gap-1">
               <Ban className="w-3 h-3" /> Cancelar
             </button>
           )}
-          {!isRunning && (
+          {!isActive && (
             <button onClick={onDismiss} className="text-gray-500 hover:text-gray-300">
               <X className="w-4 h-4" />
             </button>
