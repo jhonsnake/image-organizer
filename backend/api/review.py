@@ -1,5 +1,7 @@
 """Review endpoints — browse, reclassify, and batch-update review photos."""
 
+import asyncio
+import logging
 from typing import Optional
 
 from fastapi import APIRouter, Depends, HTTPException
@@ -9,8 +11,11 @@ from sqlalchemy import select, func
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from config import settings
-from models import Photo, PhotoAction, PhotoReason, get_db
+from models import Photo, PhotoAction, PhotoReason, VisionProviderConfig, Job, get_db
 from services.thumbnails import generate_thumbnail
+from services.vision import create_provider
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/review", tags=["review"])
 
@@ -162,6 +167,153 @@ async def batch_reclassify(
 
     await db.commit()
     return {"updated": updated}
+
+
+class AiReclassifyRequest(BaseModel):
+    photo_ids: Optional[list[int]] = None  # None = all review photos
+    confidence_threshold: float = 0.7
+
+
+class AiReclassifyResult(BaseModel):
+    total: int
+    classified: int
+    kept: int
+    trashed: int
+    documents: int
+    still_review: int
+    provider_used: str
+
+
+@router.post("/{job_id}/reclassify-ai", response_model=AiReclassifyResult)
+async def reclassify_with_ai(
+    job_id: int,
+    req: AiReclassifyRequest = AiReclassifyRequest(),
+    db: AsyncSession = Depends(get_db),
+):
+    """Re-run AI vision classification on review photos from a completed job."""
+    # Verify job exists
+    job = await db.get(Job, job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job no encontrado")
+
+    # Find an available provider
+    prov_result = await db.execute(
+        select(VisionProviderConfig)
+        .where(VisionProviderConfig.enabled == True)
+        .order_by(VisionProviderConfig.priority)
+    )
+    prov_configs = list(prov_result.scalars().all())
+
+    provider = None
+    provider_label = ""
+    for pc in prov_configs:
+        candidate = create_provider(
+            provider_type=pc.provider_type,
+            base_url=pc.base_url,
+            model=pc.model,
+            api_key=pc.api_key,
+        )
+        if await candidate.is_available():
+            provider = candidate
+            provider_label = f"{pc.name} ({pc.model or pc.provider_type})"
+            break
+        else:
+            await candidate.close()
+
+    if not provider:
+        raise HTTPException(
+            status_code=503,
+            detail="Ningun provider de vision disponible. Configura uno en la seccion de Providers.",
+        )
+
+    # Get review photos to reclassify
+    query = select(Photo).where(
+        Photo.job_id == job_id,
+        Photo.action == PhotoAction.REVIEW,
+    )
+    if req.photo_ids:
+        query = query.where(Photo.id.in_(req.photo_ids))
+
+    result = await db.execute(query)
+    photos = list(result.scalars().all())
+
+    if not photos:
+        await provider.close()
+        raise HTTPException(status_code=404, detail="No hay fotos en review para reclasificar")
+
+    confidence_threshold = req.confidence_threshold
+    classified = 0
+    kept = 0
+    trashed = 0
+    documents = 0
+    still_review = 0
+
+    try:
+        for photo in photos:
+            # Only classify images, not videos
+            if photo.media_type == "video":
+                still_review += 1
+                continue
+
+            classification = await provider.classify(
+                photo.path,
+                max_size=settings.default_max_image_size,
+            )
+
+            if classification:
+                cat = classification["category"]
+                conf = classification["confidence"]
+                photo.vision_label = cat
+                photo.vision_confidence = conf
+                photo.confidence = conf
+                photo.stage_decided = 4
+
+                if conf < confidence_threshold:
+                    photo.action = PhotoAction.REVIEW
+                    photo.reason = PhotoReason.VISION_AMBIGUOUS
+                    still_review += 1
+                elif cat == "screenshot":
+                    photo.action = PhotoAction.TRASH
+                    photo.reason = PhotoReason.VISION_SCREENSHOT
+                    trashed += 1
+                elif cat == "meme":
+                    photo.action = PhotoAction.TRASH
+                    photo.reason = PhotoReason.VISION_MEME
+                    trashed += 1
+                elif cat == "invoice":
+                    photo.action = PhotoAction.DOCUMENTS
+                    photo.reason = PhotoReason.VISION_INVOICE
+                    documents += 1
+                elif cat == "document":
+                    photo.action = PhotoAction.DOCUMENTS
+                    photo.reason = PhotoReason.VISION_DOCUMENT
+                    documents += 1
+                elif cat == "accidental":
+                    photo.action = PhotoAction.TRASH
+                    photo.reason = PhotoReason.VISION_ACCIDENTAL
+                    trashed += 1
+                elif cat == "photo":
+                    photo.action = PhotoAction.KEEP
+                    photo.reason = PhotoReason.VISION_PHOTO
+                    kept += 1
+
+                classified += 1
+            else:
+                still_review += 1
+
+        await db.commit()
+    finally:
+        await provider.close()
+
+    return AiReclassifyResult(
+        total=len(photos),
+        classified=classified,
+        kept=kept,
+        trashed=trashed,
+        documents=documents,
+        still_review=still_review,
+        provider_used=provider_label,
+    )
 
 
 @router.get("/thumbnail/{filename}")

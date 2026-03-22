@@ -1,10 +1,10 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
   Trash2, Check, FileText, X, ChevronLeft, ChevronRight,
-  ZoomIn, Loader2, Filter,
+  ZoomIn, Loader2, Filter, Sparkles,
 } from 'lucide-react';
 import { api, reasonLabel } from '../lib/api';
-import type { Job, ReviewPhoto } from '../lib/api';
+import type { Job, ReviewPhoto, AiReclassifyResult } from '../lib/api';
 
 export default function Review() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -17,6 +17,8 @@ export default function Review() {
   const [lightbox, setLightbox] = useState<number | null>(null); // photo index
   const [minConf] = useState(0);
   const [maxConf, setMaxConf] = useState(1);
+  const [aiLoading, setAiLoading] = useState(false);
+  const [aiResult, setAiResult] = useState<AiReclassifyResult | null>(null);
 
   const pageSize = 48;
 
@@ -88,6 +90,23 @@ export default function Review() {
     else setSelected(new Set(photos.map((p) => p.id)));
   };
 
+  const aiReclassify = async (photoIds?: number[]) => {
+    if (!selectedJobId) return;
+    setAiLoading(true);
+    setAiResult(null);
+    try {
+      const result = await api.aiReclassify(selectedJobId, photoIds);
+      setAiResult(result);
+      // Reload photos to reflect changes
+      await loadPhotos();
+      setSelected(new Set());
+    } catch (err: unknown) {
+      const msg = err instanceof Error ? err.message : 'Error desconocido';
+      alert(`Error: ${msg}`);
+    }
+    setAiLoading(false);
+  };
+
   // ── Lightbox navigation ──
   const lbPhoto = lightbox !== null ? photos[lightbox] : null;
   const lbPrev = () => setLightbox((i) => (i !== null && i > 0 ? i - 1 : i));
@@ -136,6 +155,17 @@ export default function Review() {
             ))}
           </select>
 
+          {/* AI Reclassify */}
+          <button
+            onClick={() => aiReclassify(selected.size > 0 ? [...selected] : undefined)}
+            disabled={aiLoading}
+            className="btn-primary flex items-center gap-1.5 text-sm"
+            title={selected.size > 0 ? `Clasificar ${selected.size} seleccionadas con IA` : 'Clasificar todas con IA'}
+          >
+            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
+            {aiLoading ? 'Clasificando...' : selected.size > 0 ? `IA (${selected.size})` : 'Clasificar con IA'}
+          </button>
+
           {/* Confidence filter */}
           <div className="flex items-center gap-2 text-sm text-gray-400">
             <Filter className="w-4 h-4" />
@@ -150,6 +180,26 @@ export default function Review() {
           </div>
         </div>
       </div>
+
+      {/* AI result banner */}
+      {aiResult && (
+        <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 flex items-center justify-between">
+          <div className="text-sm text-purple-200">
+            <Sparkles className="w-4 h-4 inline mr-1.5" />
+            IA clasifico {aiResult.classified}/{aiResult.total} fotos con <span className="font-medium">{aiResult.provider_used}</span>
+            {' — '}
+            <span className="text-green-400">{aiResult.kept} mantener</span>
+            {', '}
+            <span className="text-red-400">{aiResult.trashed} basura</span>
+            {', '}
+            <span className="text-blue-400">{aiResult.documents} docs</span>
+            {aiResult.still_review > 0 && <>, <span className="text-yellow-400">{aiResult.still_review} aun en review</span></>}
+          </div>
+          <button onClick={() => setAiResult(null)} className="text-gray-500 hover:text-gray-300">
+            <X className="w-4 h-4" />
+          </button>
+        </div>
+      )}
 
       {/* Batch actions */}
       {selected.size > 0 && (

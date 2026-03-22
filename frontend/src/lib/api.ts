@@ -103,6 +103,15 @@ export const api = {
       body: JSON.stringify({ photo_ids: photoIds, action }),
     }),
 
+  aiReclassify: (jobId: number, photoIds?: number[], confidenceThreshold = 0.7) =>
+    request<AiReclassifyResult>(`/api/review/${jobId}/reclassify-ai`, {
+      method: 'POST',
+      body: JSON.stringify({
+        photo_ids: photoIds || null,
+        confidence_threshold: confidenceThreshold,
+      }),
+    }),
+
   thumbnailUrl: (filename: string) => `/api/review/thumbnail/${filename}`,
   fullImageUrl: (photoId: number) => `/api/review/full/${photoId}`,
 
@@ -196,6 +205,18 @@ export interface ReviewPhoto {
   thumbnail_path: string | null;
   duration: number | null;
   video_codec: string | null;
+}
+
+// ── AI Reclassify ──
+
+export interface AiReclassifyResult {
+  total: number;
+  classified: number;
+  kept: number;
+  trashed: number;
+  documents: number;
+  still_review: number;
+  provider_used: string;
 }
 
 // ── Space Analysis ──
