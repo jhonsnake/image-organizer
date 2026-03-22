@@ -3,8 +3,7 @@ services:
     build: .
     container_name: nas-photo-cleaner
     restart: unless-stopped
-    ports:
-      - "8090:8090"
+    network_mode: host
     volumes:
       # Persistent database and thumbnails
       - app-data:/app/data

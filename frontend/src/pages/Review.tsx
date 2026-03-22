@@ -1,10 +1,27 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
   Trash2, Check, FileText, X, ChevronLeft, ChevronRight,
-  ZoomIn, Loader2, Filter, Sparkles,
+  ZoomIn, Loader2, Filter, Sparkles, Ban,
 } from 'lucide-react';
 import { api, reasonLabel } from '../lib/api';
-import type { Job, ReviewPhoto, AiReclassifyResult } from '../lib/api';
+import type { Job, ReviewPhoto, AiReclassifyProgress, AiProviderInfo } from '../lib/api';
+
+// ── AI progress state ──
+interface AiProgressState {
+  taskId: string;
+  jobId: number;
+  total: number;
+  processed: number;
+  currentFile: string;
+  classified: number;
+  kept: number;
+  trashed: number;
+  documents: number;
+  stillReview: number;
+  providerUsed: string;
+  status: 'running' | 'done' | 'cancelled' | 'error';
+  error?: string;
+}
 
 export default function Review() {
   const [jobs, setJobs] = useState<Job[]>([]);
@@ -14,21 +31,32 @@ export default function Review() {
   const [page, setPage] = useState(1);
   const [totalCount, setTotalCount] = useState(0);
   const [selected, setSelected] = useState<Set<number>>(new Set());
-  const [lightbox, setLightbox] = useState<number | null>(null); // photo index
+  const [lightbox, setLightbox] = useState<number | null>(null);
   const [minConf] = useState(0);
   const [maxConf, setMaxConf] = useState(1);
-  const [aiLoading, setAiLoading] = useState(false);
-  const [aiResult, setAiResult] = useState<AiReclassifyResult | null>(null);
+
+  // AI state
+  const [aiProgress, setAiProgress] = useState<AiProgressState | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ mode: 'all' | 'selected'; count: number } | null>(null);
+  const [providerInfo, setProviderInfo] = useState<AiProviderInfo | null>(null);
+
+  // WebSocket ref
+  const wsRef = useRef<WebSocket | null>(null);
 
   const pageSize = 48;
 
-  // Load jobs that have review photos
+  // Load jobs
   useEffect(() => {
     api.listJobs(undefined, 20).then((j) => {
       const withData = j.filter((x) => x.review_count > 0 || x.status === 'completed' || x.status === 'running');
       setJobs(withData);
       if (withData.length && !selectedJobId) setSelectedJobId(withData[0].id);
     });
+  }, []);
+
+  // Load provider info for confirmation dialog
+  useEffect(() => {
+    api.getProviderInfo().then(setProviderInfo).catch(() => {});
   }, []);
 
   // Load review photos
@@ -48,23 +76,64 @@ export default function Review() {
 
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
 
+  // WebSocket for AI progress
+  useEffect(() => {
+    const proto = window.location.protocol === 'https:' ? 'wss' : 'ws';
+    const url = `${proto}://${window.location.host}/ws`;
+    const ws = new WebSocket(url);
+    wsRef.current = ws;
+
+    ws.onmessage = (e) => {
+      try {
+        const msg = JSON.parse(e.data);
+        if (msg.event === 'ai_reclassify_progress') {
+          const p = msg as AiReclassifyProgress;
+          setAiProgress((prev) => prev ? {
+            ...prev,
+            processed: p.processed,
+            currentFile: p.current_file,
+            classified: p.classified,
+            kept: p.kept,
+            trashed: p.trashed,
+            documents: p.documents,
+            stillReview: p.still_review,
+          } : prev);
+          // Remove classified photos from grid in real-time
+          if (p.result && p.result !== 'processing' && p.result !== 'review' && p.result !== 'skip_video') {
+            setPhotos((prev) => prev.filter((ph) => ph.id !== p.photo_id));
+            setTotalCount((c) => Math.max(0, c - 1));
+          }
+        } else if (msg.event === 'ai_reclassify_done') {
+          setAiProgress((prev) => prev ? { ...prev, status: 'done', processed: msg.total } : prev);
+        } else if (msg.event === 'ai_reclassify_cancelled') {
+          setAiProgress((prev) => prev ? { ...prev, status: 'cancelled' } : prev);
+        } else if (msg.event === 'ai_reclassify_error') {
+          setAiProgress((prev) => prev ? { ...prev, status: 'error', error: msg.error } : prev);
+        }
+      } catch { /* ignore */ }
+    };
+
+    ws.onclose = () => {
+      // Reconnect
+      setTimeout(() => {
+        if (wsRef.current === ws) wsRef.current = null;
+      }, 2000);
+    };
+
+    return () => { ws.close(); };
+  }, []);
+
   const totalPages = Math.ceil(totalCount / pageSize);
 
   // ── Actions ──
-
   const reclassify = async (photoId: number, action: string) => {
     await api.reclassifyPhoto(photoId, action);
     setPhotos((prev) => prev.filter((p) => p.id !== photoId));
     setTotalCount((c) => c - 1);
     setSelected((s) => { s.delete(photoId); return new Set(s); });
-    // If in lightbox, advance to next
     if (lightbox !== null) {
       const idx = photos.findIndex((p) => p.id === photoId);
-      if (idx >= 0 && idx < photos.length - 1) {
-        // Will auto-adjust since photo is removed
-      } else {
-        setLightbox(null);
-      }
+      if (!(idx >= 0 && idx < photos.length - 1)) setLightbox(null);
     }
   };
 
@@ -79,8 +148,7 @@ export default function Review() {
   const toggleSelect = (id: number) => {
     setSelected((prev) => {
       const next = new Set(prev);
-      if (next.has(id)) next.delete(id);
-      else next.add(id);
+      if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   };
@@ -90,29 +158,56 @@ export default function Review() {
     else setSelected(new Set(photos.map((p) => p.id)));
   };
 
-  const aiReclassify = async (photoIds?: number[]) => {
-    if (!selectedJobId) return;
-    setAiLoading(true);
-    setAiResult(null);
+  // AI reclassify
+  const showConfirmDialog = (mode: 'all' | 'selected') => {
+    const count = mode === 'selected' ? selected.size : totalCount;
+    setConfirmDialog({ mode, count });
+  };
+
+  const startAiReclassify = async () => {
+    if (!selectedJobId || !confirmDialog) return;
+    const photoIds = confirmDialog.mode === 'selected' ? [...selected] : undefined;
+    setConfirmDialog(null);
+
     try {
       const result = await api.aiReclassify(selectedJobId, photoIds);
-      setAiResult(result);
-      // Reload photos to reflect changes
-      await loadPhotos();
+      setAiProgress({
+        taskId: result.task_id,
+        jobId: selectedJobId,
+        total: result.total,
+        processed: 0,
+        currentFile: '',
+        classified: 0,
+        kept: 0,
+        trashed: 0,
+        documents: 0,
+        stillReview: 0,
+        providerUsed: result.provider_used,
+        status: 'running',
+      });
       setSelected(new Set());
     } catch (err: unknown) {
       const msg = err instanceof Error ? err.message : 'Error desconocido';
       alert(`Error: ${msg}`);
     }
-    setAiLoading(false);
   };
 
-  // ── Lightbox navigation ──
+  const cancelAi = async () => {
+    if (aiProgress?.taskId) {
+      try { await api.cancelAiReclassify(aiProgress.taskId); } catch { /* ignore */ }
+    }
+  };
+
+  const dismissAi = () => {
+    setAiProgress(null);
+    loadPhotos();
+  };
+
+  // Lightbox
   const lbPhoto = lightbox !== null ? photos[lightbox] : null;
   const lbPrev = () => setLightbox((i) => (i !== null && i > 0 ? i - 1 : i));
   const lbNext = () => setLightbox((i) => (i !== null && i < photos.length - 1 ? i + 1 : i));
 
-  // Keyboard nav
   useEffect(() => {
     if (lightbox === null) return;
     const handler = (e: KeyboardEvent) => {
@@ -133,6 +228,8 @@ export default function Review() {
       </div>
     );
   }
+
+  const aiRunning = aiProgress?.status === 'running';
 
   return (
     <div className="space-y-4">
@@ -155,15 +252,24 @@ export default function Review() {
             ))}
           </select>
 
-          {/* AI Reclassify */}
+          {/* AI buttons */}
+          {selected.size > 0 && (
+            <button
+              onClick={() => showConfirmDialog('selected')}
+              disabled={aiRunning}
+              className="btn-primary flex items-center gap-1.5 text-sm"
+            >
+              <Sparkles className="w-4 h-4" />
+              IA seleccionadas ({selected.size})
+            </button>
+          )}
           <button
-            onClick={() => aiReclassify(selected.size > 0 ? [...selected] : undefined)}
-            disabled={aiLoading}
+            onClick={() => showConfirmDialog('all')}
+            disabled={aiRunning || totalCount === 0}
             className="btn-primary flex items-center gap-1.5 text-sm"
-            title={selected.size > 0 ? `Clasificar ${selected.size} seleccionadas con IA` : 'Clasificar todas con IA'}
           >
-            {aiLoading ? <Loader2 className="w-4 h-4 animate-spin" /> : <Sparkles className="w-4 h-4" />}
-            {aiLoading ? 'Clasificando...' : selected.size > 0 ? `IA (${selected.size})` : 'Clasificar con IA'}
+            <Sparkles className="w-4 h-4" />
+            IA todas ({totalCount})
           </button>
 
           {/* Confidence filter */}
@@ -181,23 +287,47 @@ export default function Review() {
         </div>
       </div>
 
-      {/* AI result banner */}
-      {aiResult && (
-        <div className="bg-purple-500/10 border border-purple-500/30 rounded-lg p-3 flex items-center justify-between">
-          <div className="text-sm text-purple-200">
-            <Sparkles className="w-4 h-4 inline mr-1.5" />
-            IA clasifico {aiResult.classified}/{aiResult.total} fotos con <span className="font-medium">{aiResult.provider_used}</span>
-            {' — '}
-            <span className="text-green-400">{aiResult.kept} mantener</span>
-            {', '}
-            <span className="text-red-400">{aiResult.trashed} basura</span>
-            {', '}
-            <span className="text-blue-400">{aiResult.documents} docs</span>
-            {aiResult.still_review > 0 && <>, <span className="text-yellow-400">{aiResult.still_review} aun en review</span></>}
+      {/* AI progress banner */}
+      {aiProgress && (
+        <AiProgressBanner
+          progress={aiProgress}
+          onCancel={cancelAi}
+          onDismiss={dismissAi}
+        />
+      )}
+
+      {/* Confirmation dialog */}
+      {confirmDialog && (
+        <div className="fixed inset-0 z-50 bg-black/70 flex items-center justify-center" onClick={() => setConfirmDialog(null)}>
+          <div className="bg-gray-900 border border-gray-700 rounded-xl p-6 max-w-md w-full mx-4 space-y-4" onClick={(e) => e.stopPropagation()}>
+            <h3 className="text-lg font-semibold flex items-center gap-2">
+              <Sparkles className="w-5 h-5 text-purple-400" />
+              Clasificar con IA
+            </h3>
+            <p className="text-gray-300">
+              Se van a clasificar <span className="font-bold text-white">{confirmDialog.count} fotos</span>
+              {confirmDialog.mode === 'selected' ? ' seleccionadas' : ' en review'}
+              {providerInfo?.available && (
+                <> usando <span className="font-medium text-purple-300">{providerInfo.name} ({providerInfo.model})</span></>
+              )}
+            </p>
+            {!providerInfo?.available && (
+              <p className="text-red-400 text-sm">No hay ningun provider de IA disponible.</p>
+            )}
+            <div className="flex gap-3 justify-end">
+              <button onClick={() => setConfirmDialog(null)} className="btn-secondary">
+                Cancelar
+              </button>
+              <button
+                onClick={startAiReclassify}
+                disabled={!providerInfo?.available}
+                className="btn-primary flex items-center gap-1.5"
+              >
+                <Sparkles className="w-4 h-4" />
+                Iniciar
+              </button>
+            </div>
           </div>
-          <button onClick={() => setAiResult(null)} className="text-gray-500 hover:text-gray-300">
-            <X className="w-4 h-4" />
-          </button>
         </div>
       )}
 
@@ -277,6 +407,103 @@ export default function Review() {
   );
 }
 
+// ── AI Progress Banner ──
+
+function AiProgressBanner({
+  progress,
+  onCancel,
+  onDismiss,
+}: {
+  progress: AiProgressState;
+  onCancel: () => void;
+  onDismiss: () => void;
+}) {
+  const pct = progress.total > 0 ? (progress.processed / progress.total) * 100 : 0;
+  const isRunning = progress.status === 'running';
+  const isDone = progress.status === 'done';
+  const isCancelled = progress.status === 'cancelled';
+  const isError = progress.status === 'error';
+
+  const borderColor = isDone
+    ? 'border-green-500/30'
+    : isError
+      ? 'border-red-500/30'
+      : isCancelled
+        ? 'border-yellow-500/30'
+        : 'border-purple-500/30';
+
+  const bgColor = isDone
+    ? 'bg-green-500/10'
+    : isError
+      ? 'bg-red-500/10'
+      : isCancelled
+        ? 'bg-yellow-500/10'
+        : 'bg-purple-500/10';
+
+  return (
+    <div className={`${bgColor} border ${borderColor} rounded-lg p-4 space-y-3`}>
+      {/* Header */}
+      <div className="flex items-center justify-between">
+        <div className="flex items-center gap-2">
+          {isRunning && <Loader2 className="w-4 h-4 animate-spin text-purple-400" />}
+          {isDone && <Check className="w-4 h-4 text-green-400" />}
+          {isCancelled && <Ban className="w-4 h-4 text-yellow-400" />}
+          {isError && <X className="w-4 h-4 text-red-400" />}
+          <span className="font-medium text-sm">
+            {isRunning && 'Clasificando con IA...'}
+            {isDone && 'Clasificacion IA completada'}
+            {isCancelled && 'Clasificacion IA cancelada'}
+            {isError && 'Error en clasificacion IA'}
+          </span>
+          <span className="text-xs text-gray-500">{progress.providerUsed}</span>
+        </div>
+        <div className="flex items-center gap-2">
+          {isRunning && (
+            <button onClick={onCancel} className="btn-danger text-xs flex items-center gap-1">
+              <Ban className="w-3 h-3" /> Cancelar
+            </button>
+          )}
+          {!isRunning && (
+            <button onClick={onDismiss} className="text-gray-500 hover:text-gray-300">
+              <X className="w-4 h-4" />
+            </button>
+          )}
+        </div>
+      </div>
+
+      {/* Progress bar */}
+      <div className="w-full bg-gray-800 rounded-full h-2">
+        <div
+          className={`h-2 rounded-full transition-all duration-300 ${
+            isDone ? 'bg-green-500' : isError ? 'bg-red-500' : 'bg-purple-500'
+          }`}
+          style={{ width: `${pct}%` }}
+        />
+      </div>
+
+      {/* Stats */}
+      <div className="flex items-center justify-between text-sm">
+        <div className="flex items-center gap-4">
+          <span className="text-gray-400">{progress.processed}/{progress.total} fotos</span>
+          <span className="text-green-400">{progress.kept} mantener</span>
+          <span className="text-red-400">{progress.trashed} basura</span>
+          <span className="text-blue-400">{progress.documents} docs</span>
+          {progress.stillReview > 0 && <span className="text-yellow-400">{progress.stillReview} review</span>}
+        </div>
+        {isRunning && progress.currentFile && (
+          <span className="text-xs text-gray-500 truncate max-w-[200px]">{progress.currentFile}</span>
+        )}
+      </div>
+
+      {isError && progress.error && (
+        <p className="text-xs text-red-400">{progress.error}</p>
+      )}
+    </div>
+  );
+}
+
+// ── Photo Card ──
+
 function PhotoCard({
   photo, isSelected, onSelect, onOpen, onAction,
 }: {
@@ -294,7 +521,6 @@ function PhotoCard({
         isSelected ? 'border-purple-500 ring-1 ring-purple-500/50' : 'border-gray-800 hover:border-gray-700'
       }`}
     >
-      {/* Checkbox */}
       <button
         onClick={onSelect}
         className="absolute top-1.5 left-1.5 z-10 w-5 h-5 rounded border border-gray-600 bg-gray-900/80 flex items-center justify-center"
@@ -302,7 +528,6 @@ function PhotoCard({
         {isSelected && <Check className="w-3.5 h-3.5 text-purple-400" />}
       </button>
 
-      {/* Image */}
       <div className="aspect-square cursor-pointer relative" onClick={onOpen}>
         {thumbUrl ? (
           <img src={thumbUrl} alt={photo.filename} className="w-full h-full object-cover" loading="lazy" />
@@ -321,7 +546,6 @@ function PhotoCard({
         )}
       </div>
 
-      {/* Info + actions */}
       <div className="p-1.5 space-y-1">
         <div className="text-[10px] text-gray-500 truncate">{photo.filename}</div>
         <div className="text-[10px] text-gray-600">
@@ -355,6 +579,8 @@ function PhotoCard({
   );
 }
 
+// ── Lightbox ──
+
 function Lightbox({
   photo, onClose, onPrev, onNext, onAction, hasPrev, hasNext,
 }: {
@@ -369,12 +595,10 @@ function Lightbox({
   return (
     <div className="fixed inset-0 z-50 bg-black/95 flex items-center justify-center" onClick={onClose}>
       <div className="absolute inset-0 flex items-center justify-center" onClick={(e) => e.stopPropagation()}>
-        {/* Close */}
         <button onClick={onClose} className="absolute top-4 right-4 text-gray-400 hover:text-white z-10">
           <X className="w-6 h-6" />
         </button>
 
-        {/* Nav arrows */}
         {hasPrev && (
           <button onClick={onPrev} className="absolute left-4 text-gray-400 hover:text-white">
             <ChevronLeft className="w-10 h-10" />
@@ -386,14 +610,12 @@ function Lightbox({
           </button>
         )}
 
-        {/* Image */}
         <img
           src={api.fullImageUrl(photo.id)}
           alt={photo.filename}
           className="max-h-[80vh] max-w-[85vw] object-contain"
         />
 
-        {/* Bottom bar */}
         <div className="absolute bottom-0 inset-x-0 bg-gray-900/90 backdrop-blur p-4">
           <div className="max-w-2xl mx-auto flex items-center justify-between">
             <div>

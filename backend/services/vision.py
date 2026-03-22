@@ -92,17 +92,22 @@ class OpenAICompatibleProvider(VisionProvider):
         try:
             resp = await self._client.get(
                 f"{self.base_url}/models",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=self._auth_headers(),
             )
             return resp.status_code == 200
         except Exception:
             return False
 
+    def _auth_headers(self) -> dict:
+        if self.api_key and self.api_key != "not-needed":
+            return {"Authorization": f"Bearer {self.api_key}"}
+        return {}
+
     async def list_models(self) -> list[str]:
         try:
             resp = await self._client.get(
                 f"{self.base_url}/models",
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=self._auth_headers(),
             )
             if resp.status_code == 200:
                 data = resp.json()
@@ -140,7 +145,7 @@ class OpenAICompatibleProvider(VisionProvider):
             resp = await self._client.post(
                 f"{self.base_url}/chat/completions",
                 json=payload,
-                headers={"Authorization": f"Bearer {self.api_key}"},
+                headers=self._auth_headers(),
             )
             if resp.status_code != 200:
                 logger.warning(f"LLM returned {resp.status_code}: {resp.text[:200]}")

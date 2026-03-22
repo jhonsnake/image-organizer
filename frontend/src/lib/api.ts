@@ -104,13 +104,19 @@ export const api = {
     }),
 
   aiReclassify: (jobId: number, photoIds?: number[], confidenceThreshold = 0.7) =>
-    request<AiReclassifyResult>(`/api/review/${jobId}/reclassify-ai`, {
+    request<AiReclassifyStartResult>(`/api/review/${jobId}/reclassify-ai`, {
       method: 'POST',
       body: JSON.stringify({
         photo_ids: photoIds || null,
         confidence_threshold: confidenceThreshold,
       }),
     }),
+
+  cancelAiReclassify: (taskId: string) =>
+    request<{ ok: boolean }>(`/api/review/reclassify-ai/${taskId}/cancel`, { method: 'POST' }),
+
+  getProviderInfo: () =>
+    request<AiProviderInfo>('/api/review/reclassify-ai/provider-info'),
 
   thumbnailUrl: (filename: string) => `/api/review/thumbnail/${filename}`,
   fullImageUrl: (photoId: number) => `/api/review/full/${photoId}`,
@@ -209,14 +215,31 @@ export interface ReviewPhoto {
 
 // ── AI Reclassify ──
 
-export interface AiReclassifyResult {
+export interface AiReclassifyStartResult {
+  task_id: string;
   total: number;
+  provider_used: string;
+}
+
+export interface AiReclassifyProgress {
+  task_id: string;
+  job_id: number;
+  processed: number;
+  total: number;
+  current_file: string;
+  photo_id: number;
+  result: string;
   classified: number;
   kept: number;
   trashed: number;
   documents: number;
   still_review: number;
-  provider_used: string;
+}
+
+export interface AiProviderInfo {
+  name: string | null;
+  model: string | null;
+  available: boolean;
 }
 
 // ── Space Analysis ──

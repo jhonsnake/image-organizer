@@ -174,39 +174,196 @@ class AiReclassifyRequest(BaseModel):
     confidence_threshold: float = 0.7
 
 
-class AiReclassifyResult(BaseModel):
+class AiReclassifyStartResult(BaseModel):
+    task_id: str
     total: int
-    classified: int
-    kept: int
-    trashed: int
-    documents: int
-    still_review: int
     provider_used: str
 
 
-@router.post("/{job_id}/reclassify-ai", response_model=AiReclassifyResult)
+# In-memory state for running AI reclassify tasks
+_ai_tasks: dict[str, dict] = {}
+
+
+def _broadcast_ai(event: str, data: dict):
+    from main import ws_manager, _loop
+    msg = {"event": event, **data}
+    if _loop and not _loop.is_closed():
+        asyncio.run_coroutine_threadsafe(ws_manager.broadcast(msg), _loop)
+
+
+async def _run_ai_reclassify(
+    task_id: str,
+    job_id: int,
+    photo_ids: list[int],
+    confidence_threshold: float,
+    provider_type: str,
+    base_url: str,
+    model: str,
+    api_key: str,
+    provider_label: str,
+):
+    """Background coroutine: classify photos one-by-one, broadcasting progress."""
+    from models import async_session
+
+    provider = create_provider(
+        provider_type=provider_type,
+        base_url=base_url,
+        model=model,
+        api_key=api_key,
+    )
+
+    state = _ai_tasks[task_id]
+
+    try:
+        async with async_session() as db:
+            result = await db.execute(
+                select(Photo).where(Photo.id.in_(photo_ids))
+            )
+            photos = list(result.scalars().all())
+
+            for i, photo in enumerate(photos):
+                # Check cancellation
+                if state.get("cancelled"):
+                    _broadcast_ai("ai_reclassify_cancelled", {
+                        "task_id": task_id, "job_id": job_id,
+                        "processed": i, "total": len(photos),
+                    })
+                    state["status"] = "cancelled"
+                    return
+
+                # Skip videos
+                if photo.media_type == "video":
+                    state["still_review"] += 1
+                    _broadcast_ai("ai_reclassify_progress", {
+                        "task_id": task_id, "job_id": job_id,
+                        "processed": i + 1, "total": len(photos),
+                        "current_file": photo.filename,
+                        "photo_id": photo.id,
+                        "result": "skip_video",
+                        **_state_counts(state),
+                    })
+                    continue
+
+                _broadcast_ai("ai_reclassify_progress", {
+                    "task_id": task_id, "job_id": job_id,
+                    "processed": i, "total": len(photos),
+                    "current_file": photo.filename,
+                    "photo_id": photo.id,
+                    "result": "processing",
+                    **_state_counts(state),
+                })
+
+                classification = await provider.classify(
+                    photo.path,
+                    max_size=settings.default_max_image_size,
+                )
+
+                action_taken = "review"
+                if classification:
+                    cat = classification["category"]
+                    conf = classification["confidence"]
+                    photo.vision_label = cat
+                    photo.vision_confidence = conf
+                    photo.confidence = conf
+                    photo.stage_decided = 4
+
+                    if conf < confidence_threshold:
+                        photo.action = PhotoAction.REVIEW
+                        photo.reason = PhotoReason.VISION_AMBIGUOUS
+                        state["still_review"] += 1
+                        action_taken = "review"
+                    elif cat in ("screenshot", "meme", "accidental"):
+                        photo.action = PhotoAction.TRASH
+                        photo.reason = {
+                            "screenshot": PhotoReason.VISION_SCREENSHOT,
+                            "meme": PhotoReason.VISION_MEME,
+                            "accidental": PhotoReason.VISION_ACCIDENTAL,
+                        }[cat]
+                        state["trashed"] += 1
+                        action_taken = "trash"
+                    elif cat in ("invoice", "document"):
+                        photo.action = PhotoAction.DOCUMENTS
+                        photo.reason = {
+                            "invoice": PhotoReason.VISION_INVOICE,
+                            "document": PhotoReason.VISION_DOCUMENT,
+                        }[cat]
+                        state["documents"] += 1
+                        action_taken = "documents"
+                    elif cat == "photo":
+                        photo.action = PhotoAction.KEEP
+                        photo.reason = PhotoReason.VISION_PHOTO
+                        state["kept"] += 1
+                        action_taken = "keep"
+
+                    state["classified"] += 1
+                else:
+                    state["still_review"] += 1
+
+                await db.commit()
+
+                _broadcast_ai("ai_reclassify_progress", {
+                    "task_id": task_id, "job_id": job_id,
+                    "processed": i + 1, "total": len(photos),
+                    "current_file": photo.filename,
+                    "photo_id": photo.id,
+                    "result": action_taken,
+                    **_state_counts(state),
+                })
+
+        state["status"] = "done"
+        _broadcast_ai("ai_reclassify_done", {
+            "task_id": task_id, "job_id": job_id,
+            "total": len(photos),
+            "provider_used": provider_label,
+            **_state_counts(state),
+        })
+    except Exception as e:
+        logger.error(f"AI reclassify task {task_id} failed: {e}")
+        state["status"] = "error"
+        _broadcast_ai("ai_reclassify_error", {
+            "task_id": task_id, "job_id": job_id,
+            "error": str(e),
+        })
+    finally:
+        await provider.close()
+
+
+def _state_counts(state: dict) -> dict:
+    return {
+        "classified": state["classified"],
+        "kept": state["kept"],
+        "trashed": state["trashed"],
+        "documents": state["documents"],
+        "still_review": state["still_review"],
+    }
+
+
+@router.post("/{job_id}/reclassify-ai", response_model=AiReclassifyStartResult)
 async def reclassify_with_ai(
     job_id: int,
     req: AiReclassifyRequest = AiReclassifyRequest(),
     db: AsyncSession = Depends(get_db),
 ):
-    """Re-run AI vision classification on review photos from a completed job."""
-    # Verify job exists
+    """Start AI reclassification as background task with WebSocket progress."""
+    # Check if already running
+    for tid, st in _ai_tasks.items():
+        if st.get("status") == "running" and st.get("job_id") == job_id:
+            raise HTTPException(status_code=409, detail="Ya hay una clasificacion IA en curso para este job")
+
     job = await db.get(Job, job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Job no encontrado")
 
-    # Find an available provider
+    # Find available provider
     prov_result = await db.execute(
         select(VisionProviderConfig)
         .where(VisionProviderConfig.enabled == True)
         .order_by(VisionProviderConfig.priority)
     )
-    prov_configs = list(prov_result.scalars().all())
-
     provider = None
     provider_label = ""
-    for pc in prov_configs:
+    prov_config = None
+    for pc in prov_result.scalars().all():
         candidate = create_provider(
             provider_type=pc.provider_type,
             base_url=pc.base_url,
@@ -214,20 +371,22 @@ async def reclassify_with_ai(
             api_key=pc.api_key,
         )
         if await candidate.is_available():
-            provider = candidate
             provider_label = f"{pc.name} ({pc.model or pc.provider_type})"
+            prov_config = pc
+            provider = candidate
             break
         else:
             await candidate.close()
 
-    if not provider:
+    if not provider or not prov_config:
         raise HTTPException(
             status_code=503,
             detail="Ningun provider de vision disponible. Configura uno en la seccion de Providers.",
         )
+    await provider.close()
 
-    # Get review photos to reclassify
-    query = select(Photo).where(
+    # Get photo IDs to process
+    query = select(Photo.id).where(
         Photo.job_id == job_id,
         Photo.action == PhotoAction.REVIEW,
     )
@@ -235,85 +394,77 @@ async def reclassify_with_ai(
         query = query.where(Photo.id.in_(req.photo_ids))
 
     result = await db.execute(query)
-    photos = list(result.scalars().all())
+    photo_ids = [row[0] for row in result.all()]
 
-    if not photos:
-        await provider.close()
+    if not photo_ids:
         raise HTTPException(status_code=404, detail="No hay fotos en review para reclasificar")
 
-    confidence_threshold = req.confidence_threshold
-    classified = 0
-    kept = 0
-    trashed = 0
-    documents = 0
-    still_review = 0
+    # Create task
+    import uuid
+    task_id = str(uuid.uuid4())[:8]
+    _ai_tasks[task_id] = {
+        "status": "running",
+        "job_id": job_id,
+        "classified": 0,
+        "kept": 0,
+        "trashed": 0,
+        "documents": 0,
+        "still_review": 0,
+        "cancelled": False,
+    }
 
-    try:
-        for photo in photos:
-            # Only classify images, not videos
-            if photo.media_type == "video":
-                still_review += 1
-                continue
+    # Launch background task
+    asyncio.create_task(_run_ai_reclassify(
+        task_id=task_id,
+        job_id=job_id,
+        photo_ids=photo_ids,
+        confidence_threshold=req.confidence_threshold,
+        provider_type=prov_config.provider_type,
+        base_url=prov_config.base_url,
+        model=prov_config.model,
+        api_key=prov_config.api_key,
+        provider_label=provider_label,
+    ))
 
-            classification = await provider.classify(
-                photo.path,
-                max_size=settings.default_max_image_size,
-            )
-
-            if classification:
-                cat = classification["category"]
-                conf = classification["confidence"]
-                photo.vision_label = cat
-                photo.vision_confidence = conf
-                photo.confidence = conf
-                photo.stage_decided = 4
-
-                if conf < confidence_threshold:
-                    photo.action = PhotoAction.REVIEW
-                    photo.reason = PhotoReason.VISION_AMBIGUOUS
-                    still_review += 1
-                elif cat == "screenshot":
-                    photo.action = PhotoAction.TRASH
-                    photo.reason = PhotoReason.VISION_SCREENSHOT
-                    trashed += 1
-                elif cat == "meme":
-                    photo.action = PhotoAction.TRASH
-                    photo.reason = PhotoReason.VISION_MEME
-                    trashed += 1
-                elif cat == "invoice":
-                    photo.action = PhotoAction.DOCUMENTS
-                    photo.reason = PhotoReason.VISION_INVOICE
-                    documents += 1
-                elif cat == "document":
-                    photo.action = PhotoAction.DOCUMENTS
-                    photo.reason = PhotoReason.VISION_DOCUMENT
-                    documents += 1
-                elif cat == "accidental":
-                    photo.action = PhotoAction.TRASH
-                    photo.reason = PhotoReason.VISION_ACCIDENTAL
-                    trashed += 1
-                elif cat == "photo":
-                    photo.action = PhotoAction.KEEP
-                    photo.reason = PhotoReason.VISION_PHOTO
-                    kept += 1
-
-                classified += 1
-            else:
-                still_review += 1
-
-        await db.commit()
-    finally:
-        await provider.close()
-
-    return AiReclassifyResult(
-        total=len(photos),
-        classified=classified,
-        kept=kept,
-        trashed=trashed,
-        documents=documents,
-        still_review=still_review,
+    return AiReclassifyStartResult(
+        task_id=task_id,
+        total=len(photo_ids),
         provider_used=provider_label,
     )
+
+
+@router.post("/reclassify-ai/{task_id}/cancel")
+async def cancel_ai_reclassify(task_id: str):
+    """Cancel a running AI reclassification task."""
+    task = _ai_tasks.get(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Tarea no encontrada")
+    if task["status"] != "running":
+        raise HTTPException(status_code=400, detail="La tarea ya termino")
+    task["cancelled"] = True
+    return {"ok": True}
+
+
+@router.get("/reclassify-ai/provider-info")
+async def get_reclassify_provider_info(db: AsyncSession = Depends(get_db)):
+    """Return the provider that would be used for AI reclassification."""
+    prov_result = await db.execute(
+        select(VisionProviderConfig)
+        .where(VisionProviderConfig.enabled == True)
+        .order_by(VisionProviderConfig.priority)
+    )
+    for pc in prov_result.scalars().all():
+        p = create_provider(
+            provider_type=pc.provider_type,
+            base_url=pc.base_url,
+            model=pc.model,
+            api_key=pc.api_key,
+        )
+        available = await p.is_available()
+        await p.close()
+        if available:
+            return {"name": pc.name, "model": pc.model, "available": True}
+    return {"name": None, "model": None, "available": False}
 
 
 @router.get("/thumbnail/{filename}")
