@@ -6,15 +6,17 @@ to a `_cleanup` folder — **nothing is ever deleted automatically**.
 
 ## Features
 
-- **5-stage classification pipeline**: metadata analysis, perceptual hash deduplication, image quality analysis, AI vision classification, and video classification
+- **6-stage classification pipeline**: metadata analysis, perceptual hash deduplication, image quality analysis, AI vision classification, video classification, and file organization
 - **Video support**: scans and classifies videos (WhatsApp clips, screen recordings, duplicates via SHA256), generates video thumbnails with ffmpeg
 - **Multi-provider AI support**: local (LM Studio, Ollama, vLLM) and cloud (Anthropic, Gemini, OpenAI) with automatic fallback
 - **Real-time progress**: WebSocket-based live updates during pipeline execution
+- **AI reclassification from Review**: re-run AI vision on review photos with real-time progress bar, live stats, cancel support, and per-photo WebSocket updates — classify all or just selected photos
 - **Space analysis**: per-job breakdown by category, media type, and reason with recovery recommendations and charts
-- **Manual review queue**: review uncertain classifications with thumbnail previews (images and videos)
+- **Manual review queue**: review uncertain classifications with thumbnail previews, lightbox, keyboard shortcuts, and batch actions
 - **WhatsApp detection**: identifies stickers, statuses, and forwarded media by filename and path patterns
 - **Auto-organize by date**: all photos organized into `YYYY/MM/` folders using EXIF date, filename patterns, or file modification time — respects existing subfolder names
-- **Docker deployment**: single container, runs directly on your NAS
+- **Documents folder**: invoices and documents are moved to `Photos/Documentos/` instead of `_cleanup`
+- **Docker deployment**: single container with host networking, runs directly on your NAS
 - **Synology Photos compatible**: moves files without touching the Synology database
 
 ## Requirements
@@ -45,8 +47,7 @@ services:
     build: .
     container_name: nas-photo-cleaner
     restart: unless-stopped
-    ports:
-      - "8090:8090"
+    network_mode: host
     volumes:
       # Persistent database and thumbnails
       - app-data:/app/data
@@ -63,7 +64,7 @@ volumes:
 **Key settings:**
 - `/volume1/homes` — adjust to your NAS shared folder path
 - `CLEANER_NAS_USERS` — JSON array of NAS usernames whose photos you want to manage
-- Port `8090` — change if needed
+- `network_mode: host` — required so the container can reach local AI providers on your LAN
 
 ### 3. Build and run
 
@@ -102,7 +103,7 @@ Synology NAS (Docker)
 └── React frontend (served as static files)
     ├── Dashboard — configure and start jobs
     ├── Progress — real-time pipeline monitoring
-    ├── Review — manual photo/video review queue
+    ├── Review — manual review queue + AI reclassification with live progress
     ├── History — past job results
     ├── Space Analysis — per-job storage breakdown and charts
     └── Providers — manage AI providers
