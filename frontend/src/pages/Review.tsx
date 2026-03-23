@@ -98,18 +98,17 @@ export default function Review() {
 
   useEffect(() => { loadPhotos(); }, [loadPhotos]);
 
-  // Auto-reload when current page empties (AI classified all visible photos)
+  // Auto-reload when grid empties during AI classification
+  const gridEmpty = photos.length === 0 && !loading;
+
   useEffect(() => {
-    if (photos.length === 0 && !loading && totalCount > 0) {
-      // Page emptied — go back to page 1 or reload current page
-      if (page > 1) {
-        setPage(1);
-      } else {
-        const timer = setTimeout(() => loadPhotos(), 1000);
-        return () => clearTimeout(timer);
-      }
-    }
-  }, [photos.length, loading, totalCount, page, loadPhotos]);
+    if (!gridEmpty) return;
+
+    // Grid is empty — poll every 3s to get next batch of review photos
+    loadPhotos();
+    const timer = setInterval(loadPhotos, 3000);
+    return () => clearInterval(timer);
+  }, [gridEmpty]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // WebSocket for AI progress
   useEffect(() => {
