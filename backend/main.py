@@ -244,9 +244,23 @@ async def health():
 
 # ── Serve React frontend (production) ──
 # In production, the built React app is served from /app/static
+# StaticFiles serves assets, and the catch-all below handles SPA routing
 static_dir = os.path.join(os.path.dirname(__file__), "static")
 if os.path.isdir(static_dir):
-    app.mount("/", StaticFiles(directory=static_dir, html=True), name="frontend")
+    from fastapi.responses import FileResponse
+
+    # Serve static assets (js, css, images, etc.)
+    app.mount("/assets", StaticFiles(directory=os.path.join(static_dir, "assets")), name="static-assets")
+
+    # SPA catch-all: serve index.html for any non-API route
+    @app.get("/{full_path:path}")
+    async def spa_fallback(full_path: str):
+        # If the path matches an actual file in static dir, serve it
+        file_path = os.path.join(static_dir, full_path)
+        if full_path and os.path.isfile(file_path):
+            return FileResponse(file_path)
+        # Otherwise serve index.html for client-side routing
+        return FileResponse(os.path.join(static_dir, "index.html"))
 
 
 if __name__ == "__main__":

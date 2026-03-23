@@ -100,11 +100,16 @@ export default function Review() {
 
   // Auto-reload when current page empties (AI classified all visible photos)
   useEffect(() => {
-    if (photos.length === 0 && !loading && aiProgress?.status === 'running' && totalCount > 0) {
-      const timer = setTimeout(() => loadPhotos(), 1000);
-      return () => clearTimeout(timer);
+    if (photos.length === 0 && !loading && totalCount > 0) {
+      // Page emptied — go back to page 1 or reload current page
+      if (page > 1) {
+        setPage(1);
+      } else {
+        const timer = setTimeout(() => loadPhotos(), 1000);
+        return () => clearTimeout(timer);
+      }
     }
-  }, [photos.length, loading, aiProgress?.status, totalCount, loadPhotos]);
+  }, [photos.length, loading, totalCount, page, loadPhotos]);
 
   // WebSocket for AI progress
   useEffect(() => {
