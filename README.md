@@ -146,12 +146,36 @@ File → Stage 1: Metadata ─────────────────�
             ↓
        Stage 6: Execute & Organize ─────────────────────
        │ Move TRASH → _cleanup/trash/subcategory/      │
-       │ Move DOCUMENTS → _cleanup/docs/cat/YYYY/MM/   │
+       │ Move DOCUMENTS → Documentos/cat/YYYY/MM/      │
        │ Organize KEEP → YYYY/MM/ by date              │
        │ Respects existing subfolders                  │
        │ REVIEW items stay for manual review           │
        ─────────────────────────────────────────────────
 ```
+
+## Where do files go?
+
+After classification, files are organized as follows:
+
+```
+/volume1/homes/{user}/Photos/
+├── 2024/01/              ← KEEP photos organized by date
+├── 2024/02/
+├── Documentos/           ← Documents detected by AI (created on first move)
+│   ├── facturas/         ← Invoices, receipts, bills
+│   │   └── 2024/03/
+│   └── otros/            ← Other documents (IDs, menus, letters)
+│       └── 2024/01/
+└── _cleanup/             ← Trash (safe to delete after review)
+    └── trash/
+        ├── screenshots/
+        ├── memes/
+        ├── whatsapp/
+        ├── accidental/
+        └── otros/
+```
+
+> **Note:** The `Documentos/` folder is only created when documents are actually moved — either by the pipeline's execute stage or by clicking "Mover a Docs" in the AI Summary page. If you don't see it, no documents have been moved yet.
 
 ## Configuration
 
