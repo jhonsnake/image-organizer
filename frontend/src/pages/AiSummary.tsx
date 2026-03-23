@@ -2,17 +2,10 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Trash2, FileText, Eye, CheckCircle2, Sparkles, Loader2,
-  AlertTriangle, ChevronDown, ChevronUp,
+  AlertTriangle, ChevronUp,
 } from 'lucide-react';
-import { api, reasonLabel } from '../lib/api';
+import { api } from '../lib/api';
 import type { AiSummary, AiSummaryGroup } from '../lib/api';
-
-const ACTION_COLORS: Record<string, string> = {
-  trash: 'text-red-400',
-  documents: 'text-blue-400',
-  review: 'text-yellow-400',
-  keep: 'text-green-400',
-};
 
 const ACTION_BG: Record<string, string> = {
   trash: 'bg-red-500/10 border-red-500/30',
