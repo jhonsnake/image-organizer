@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
   ArrowLeft, Trash2, FileText, ListChecks, CheckCircle2, Sparkles, Loader2,
-  AlertTriangle, Shield,
+  AlertTriangle, Shield, FolderOpen,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { AiSummary, AiSummaryGroup } from '../lib/api';
@@ -44,14 +44,19 @@ export default function AiSummaryPage() {
     setGroupStates((s) => ({ ...s, [group.reason]: 'executing' }));
 
     try {
-      // Reclassify photos to the chosen action
-      if (action !== group.suggested_action || action === 'keep') {
-        await api.batchByReason(data.job_id, group.reason, action);
-      }
+      if (action === 'organize') {
+        // Organize keep photos by date
+        await api.organizeKeep(data.job_id, group.reason);
+      } else {
+        // Reclassify photos to the chosen action
+        if (action !== group.suggested_action || action === 'keep') {
+          await api.batchByReason(data.job_id, group.reason, action);
+        }
 
-      // Execute file moves for trash/documents (moves files on disk)
-      if (action === 'trash' || action === 'documents') {
-        await api.executeGroup(data.job_id, group.reason);
+        // Execute file moves for trash/documents (moves files on disk)
+        if (action === 'trash' || action === 'documents') {
+          await api.executeGroup(data.job_id, group.reason);
+        }
       }
 
       setGroupStates((s) => ({ ...s, [group.reason]: 'done' }));
@@ -83,6 +88,7 @@ export default function AiSummaryPage() {
       documents: `Mover ${group.count} archivos a Documentos`,
       keep: `Conservar ${group.count} archivos`,
       review: `Enviar ${group.count} archivos a revisión manual`,
+      organize: `Organizar ${group.count} fotos por fecha (YYYY/MM/)`,
     };
     // Dangerous if trying to trash photos that are classified as keep/photo
     const dangerous = action === 'trash' && group.suggested_action === 'keep';
@@ -251,11 +257,24 @@ export default function AiSummaryPage() {
                             </button>
                           </>
                         )}
-                        {/* Keep groups: only show "Revisar" button, NO delete */}
+                        {/* Keep groups: organize by date or leave as-is */}
                         {group.suggested_action === 'keep' && (
-                          <span className="px-3 py-1.5 rounded-md bg-green-500/10 text-green-400 text-sm flex items-center gap-1.5">
-                            <CheckCircle2 className="w-3.5 h-3.5" /> Protegido
-                          </span>
+                          <>
+                            <button
+                              onClick={() => showConfirm(group, 'organize')}
+                              className="px-3 py-1.5 rounded-md bg-purple-500/20 text-purple-300 hover:bg-purple-500/30 text-sm flex items-center gap-1.5"
+                            >
+                              <FolderOpen className="w-3.5 h-3.5" /> Organizar por fecha
+                            </button>
+                            <button
+                              onClick={() => {
+                                setGroupStates((s) => ({ ...s, [group.reason]: 'done' }));
+                              }}
+                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm flex items-center gap-1.5"
+                            >
+                              <Shield className="w-3.5 h-3.5" /> Dejar donde están
+                            </button>
+                          </>
                         )}
                         {/* Review button: send to manual review */}
                         <button
@@ -366,6 +385,7 @@ export default function AiSummaryPage() {
               Esta acción afectará {confirmDialog.count.toLocaleString()} archivos.
               {confirmDialog.action === 'trash' && ' Los archivos se moverán a _cleanup/trash/.'}
               {confirmDialog.action === 'documents' && ' Los archivos se moverán a la carpeta Documentos.'}
+              {confirmDialog.action === 'organize' && ' Las fotos se organizarán en carpetas YYYY/MM/ por fecha. Las que ya están organizadas no se mueven.'}
             </p>
             <div className="flex justify-end gap-3">
               <button
@@ -383,6 +403,7 @@ export default function AiSummaryPage() {
                   confirmDialog.action === 'trash' ? 'bg-red-600 hover:bg-red-500' :
                   confirmDialog.action === 'documents' ? 'bg-blue-600 hover:bg-blue-500' :
                   confirmDialog.action === 'keep' ? 'bg-green-600 hover:bg-green-500' :
+                  confirmDialog.action === 'organize' ? 'bg-purple-600 hover:bg-purple-500' :
                   'bg-yellow-600 hover:bg-yellow-500'
                 }`}
               >

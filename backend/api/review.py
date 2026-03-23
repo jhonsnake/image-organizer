@@ -331,6 +331,98 @@ async def execute_group(req: ExecuteGroupRequest, db: AsyncSession = Depends(get
     return {"moved": moved, "errors": errors, "size_freed": size_freed}
 
 
+class OrganizeKeepRequest(BaseModel):
+    job_id: int
+    reason: str  # e.g. "vision_photo", "legitimate"
+
+
+@router.post("/organize-keep", response_model=dict)
+async def organize_keep(req: OrganizeKeepRequest, db: AsyncSession = Depends(get_db)):
+    """Organize KEEP photos by date (YYYY/MM/) for a specific reason group."""
+    import re
+    import shutil
+    from pathlib import Path
+    from services.scanner import extract_date
+
+    job = await db.get(Job, req.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    try:
+        target_reason = PhotoReason(req.reason)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid reason: {req.reason}")
+
+    result = await db.execute(
+        select(Photo).where(
+            Photo.job_id == req.job_id,
+            Photo.reason.in_([target_reason, PhotoReason.MANUAL_KEEP]),
+            Photo.action == PhotoAction.KEEP,
+            Photo.moved == False,
+        )
+    )
+    photos = list(result.scalars().all())
+
+    source_dir = Path(job.source_dir)
+    already_organized_re = re.compile(r"[\\/]\d{4}[\\/]\d{2}[\\/]")
+
+    def get_date_subdir(photo) -> str:
+        dt = extract_date(photo.date_taken, photo.filename, photo.path)
+        if dt:
+            return f"{dt.year}/{dt.month:02d}"
+        return "sin_fecha"
+
+    organized = 0
+    errors = 0
+
+    for photo in photos:
+        src = Path(photo.path)
+        if not src.exists():
+            continue
+
+        try:
+            relative = src.relative_to(source_dir)
+        except ValueError:
+            continue
+
+        # Skip if already in YYYY/MM structure
+        if already_organized_re.search(str(relative)):
+            continue
+
+        sub_dir = get_date_subdir(photo)
+
+        # Respect existing subfolders
+        if len(relative.parts) > 1:
+            subfolder = str(relative.parent)
+            dst = source_dir / sub_dir / subfolder / relative.name
+        else:
+            dst = source_dir / sub_dir / relative.name
+
+        if dst == src:
+            continue
+
+        dst.parent.mkdir(parents=True, exist_ok=True)
+
+        if dst.exists():
+            stem, suffix = dst.stem, dst.suffix
+            counter = 1
+            while dst.exists():
+                dst = dst.parent / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        try:
+            shutil.move(str(src), str(dst))
+            photo.path = str(dst)
+            photo.moved = True
+            organized += 1
+        except Exception as e:
+            logger.error(f"Failed to organize {src}: {e}")
+            errors += 1
+
+    await db.commit()
+    return {"organized": organized, "errors": errors}
+
+
 class AiReclassifyRequest(BaseModel):
     photo_ids: Optional[list[int]] = None  # None = all review photos
     confidence_threshold: float = 0.7

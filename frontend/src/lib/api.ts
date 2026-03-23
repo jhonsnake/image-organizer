@@ -181,6 +181,12 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ job_id: jobId, reason }),
     }),
+
+  organizeKeep: (jobId: number, reason: string) =>
+    request<{ organized: number; errors: number }>('/api/review/organize-keep', {
+      method: 'POST',
+      body: JSON.stringify({ job_id: jobId, reason }),
+    }),
 };
 
 // ── Types ──
