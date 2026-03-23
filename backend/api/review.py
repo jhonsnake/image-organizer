@@ -169,6 +169,168 @@ async def batch_reclassify(
     return {"updated": updated}
 
 
+class BatchByReasonRequest(BaseModel):
+    job_id: int
+    reason: str
+    new_action: str  # "keep" | "trash" | "documents" | "review"
+
+
+@router.put("/batch-by-reason", response_model=dict)
+async def batch_by_reason(req: BatchByReasonRequest, db: AsyncSession = Depends(get_db)):
+    """Reclassify all photos with a given reason in a job."""
+    # For trash/documents: keep original reason so execute-group can find them by reason
+    # For keep: mark as manual so they're excluded from future summaries
+    action_map = {
+        "keep": (PhotoAction.KEEP, PhotoReason.MANUAL_KEEP),
+        "trash": (PhotoAction.TRASH, None),       # keep original reason
+        "documents": (PhotoAction.DOCUMENTS, None),  # keep original reason
+        "review": (PhotoAction.REVIEW, None),      # keep original reason
+    }
+    if req.new_action not in action_map:
+        raise HTTPException(status_code=400, detail=f"Invalid action: {req.new_action}")
+
+    try:
+        target_reason = PhotoReason(req.reason)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid reason: {req.reason}")
+
+    new_action, new_reason = action_map[req.new_action]
+
+    result = await db.execute(
+        select(Photo).where(
+            Photo.job_id == req.job_id,
+            Photo.reason == target_reason,
+        )
+    )
+    photos = list(result.scalars().all())
+
+    # Skip photos already manually decided
+    manual_reasons = {PhotoReason.MANUAL_KEEP, PhotoReason.MANUAL_TRASH, PhotoReason.MANUAL_DOCUMENTS}
+    updated = 0
+    for photo in photos:
+        if photo.reason in manual_reasons:
+            continue
+        photo.action = new_action
+        if new_reason is not None:
+            photo.reason = new_reason
+        photo.confidence = 1.0
+        updated += 1
+
+    await db.commit()
+    return {"updated": updated}
+
+
+class ExecuteGroupRequest(BaseModel):
+    job_id: int
+    reason: str
+
+
+@router.post("/execute-group", response_model=dict)
+async def execute_group(req: ExecuteGroupRequest, db: AsyncSession = Depends(get_db)):
+    """Move files for a specific reason group (TRASH → _cleanup/trash/, DOCUMENTS → Documentos/)."""
+    import os
+    import re
+    import shutil
+    from pathlib import Path
+    from services.scanner import extract_date
+
+    job = await db.get(Job, req.job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+
+    try:
+        target_reason = PhotoReason(req.reason)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid reason: {req.reason}")
+
+    # Fetch unmoved photos matching the reason
+    result = await db.execute(
+        select(Photo).where(
+            Photo.job_id == req.job_id,
+            Photo.reason == target_reason,
+            Photo.moved == False,
+            Photo.action.in_([PhotoAction.TRASH, PhotoAction.DOCUMENTS]),
+        )
+    )
+    photos = list(result.scalars().all())
+
+    source_dir = Path(job.source_dir)
+    cleanup_dir = source_dir / "_cleanup"
+
+    # Reuse pipeline mappings
+    TRASH_SUBDIR = {
+        PhotoReason.SCREENSHOT_FILENAME: "screenshots",
+        PhotoReason.SCREENSHOT_DIMS_NO_EXIF: "screenshots",
+        PhotoReason.VISION_SCREENSHOT: "screenshots",
+        PhotoReason.VISION_MEME: "memes",
+        PhotoReason.MESSAGING_IMAGE: "whatsapp",
+        PhotoReason.WHATSAPP_STICKER: "whatsapp",
+        PhotoReason.WHATSAPP_STATUS: "whatsapp",
+        PhotoReason.VISION_ACCIDENTAL: "accidental",
+        PhotoReason.BLURRY: "accidental",
+        PhotoReason.TOO_DARK: "accidental",
+        PhotoReason.OVEREXPOSED: "accidental",
+        PhotoReason.TINY_IMAGE: "otros",
+        PhotoReason.SMALL_FILE: "otros",
+        PhotoReason.DUPLICATE: "otros",
+        PhotoReason.MANUAL_TRASH: "otros",
+    }
+    DOC_SUBDIR = {
+        PhotoReason.VISION_INVOICE: "facturas",
+        PhotoReason.VISION_DOCUMENT: "otros",
+        PhotoReason.MANUAL_DOCUMENTS: "otros",
+    }
+
+    def get_date_subdir(photo) -> str:
+        dt = extract_date(photo.date_taken, photo.filename, photo.path)
+        if dt:
+            return f"{dt.year}/{dt.month:02d}"
+        return "sin_fecha"
+
+    moved = 0
+    errors = 0
+    size_freed = 0
+
+    for photo in photos:
+        src = Path(photo.path)
+        if not src.exists():
+            continue
+
+        if photo.action == PhotoAction.TRASH:
+            trash_subdir = TRASH_SUBDIR.get(target_reason, "otros")
+            sub_dir = get_date_subdir(photo)
+            dst_dir = cleanup_dir / "trash" / trash_subdir / sub_dir
+        elif photo.action == PhotoAction.DOCUMENTS:
+            doc_subdir = DOC_SUBDIR.get(target_reason, "otros")
+            sub_dir = get_date_subdir(photo)
+            dst_dir = source_dir / "Documentos" / doc_subdir / sub_dir
+        else:
+            continue
+
+        dst_dir.mkdir(parents=True, exist_ok=True)
+        dst = dst_dir / src.name
+
+        if dst.exists():
+            stem, suffix = dst.stem, dst.suffix
+            counter = 1
+            while dst.exists():
+                dst = dst_dir / f"{stem}_{counter}{suffix}"
+                counter += 1
+
+        try:
+            shutil.move(str(src), str(dst))
+            size_freed += photo.size_bytes or 0
+            photo.path = str(dst)
+            photo.moved = True
+            moved += 1
+        except Exception as e:
+            logger.error(f"Failed to move {src}: {e}")
+            errors += 1
+
+    await db.commit()
+    return {"moved": moved, "errors": errors, "size_freed": size_freed}
+
+
 class AiReclassifyRequest(BaseModel):
     photo_ids: Optional[list[int]] = None  # None = all review photos
     confidence_threshold: float = 0.7

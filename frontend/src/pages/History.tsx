@@ -1,6 +1,6 @@
 import { useState, useEffect } from 'react';
 import { useNavigate } from 'react-router-dom';
-import { Clock, HardDrive, CheckCircle2, XCircle, Pause, Trash2, BarChart3 } from 'lucide-react';
+import { Clock, HardDrive, CheckCircle2, XCircle, Pause, Trash2, BarChart3, Sparkles } from 'lucide-react';
 import { api } from '../lib/api';
 import type { Job } from '../lib/api';
 
@@ -110,13 +110,22 @@ export default function HistoryPage() {
                   <td className="p-3 text-right text-gray-500">{formatDuration(job.started_at, job.completed_at)}</td>
                   <td className="p-3 text-right flex items-center justify-end gap-2">
                     {job.status === 'completed' && (
-                      <button
-                        onClick={() => navigate(`/analysis/${job.id}`)}
-                        className="text-gray-600 hover:text-purple-400 transition-colors"
-                        title="Ver analisis"
-                      >
-                        <BarChart3 className="w-4 h-4" />
-                      </button>
+                      <>
+                        <button
+                          onClick={() => navigate(`/ai-summary/${job.id}`)}
+                          className="text-gray-600 hover:text-purple-400 transition-colors"
+                          title="Resumen IA"
+                        >
+                          <Sparkles className="w-4 h-4" />
+                        </button>
+                        <button
+                          onClick={() => navigate(`/analysis/${job.id}`)}
+                          className="text-gray-600 hover:text-purple-400 transition-colors"
+                          title="Ver analisis"
+                        >
+                          <BarChart3 className="w-4 h-4" />
+                        </button>
+                      </>
                     )}
                     {canDelete && (
                       <button

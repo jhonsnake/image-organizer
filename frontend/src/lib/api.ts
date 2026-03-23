@@ -165,6 +165,22 @@ export const api = {
   // ── Analysis ──
   getSpaceBreakdown: (jobId: number) =>
     request<SpaceBreakdown>(`/api/analysis/${jobId}/space-breakdown`),
+
+  getAiSummary: (jobId: number) =>
+    request<AiSummary>(`/api/analysis/${jobId}/ai-summary`),
+
+  // ── AI Summary actions ──
+  batchByReason: (jobId: number, reason: string, newAction: string) =>
+    request<{ updated: number }>('/api/review/batch-by-reason', {
+      method: 'PUT',
+      body: JSON.stringify({ job_id: jobId, reason, new_action: newAction }),
+    }),
+
+  executeGroup: (jobId: number, reason: string) =>
+    request<{ moved: number; errors: number; size_freed: number }>('/api/review/execute-group', {
+      method: 'POST',
+      body: JSON.stringify({ job_id: jobId, reason }),
+    }),
 };
 
 // ── Types ──
@@ -294,6 +310,35 @@ export interface LargeFile {
   reason: string;
   media_type: string;
   thumbnail_path: string | null;
+}
+
+// ── AI Summary ──
+
+export interface AiSummarySample {
+  id: number;
+  filename: string;
+  thumbnail_path: string | null;
+  confidence: number;
+  size_bytes: number;
+}
+
+export interface AiSummaryGroup {
+  reason: string;
+  label: string;
+  description: string;
+  suggested_action: 'keep' | 'trash' | 'review' | 'documents';
+  count: number;
+  total_moved: number;
+  size_bytes: number;
+  avg_confidence: number;
+  sample_photos: AiSummarySample[];
+}
+
+export interface AiSummary {
+  job_id: number;
+  total_classified: number;
+  groups: AiSummaryGroup[];
+  summary_text: string;
 }
 
 // ── Reason labels in Spanish ──

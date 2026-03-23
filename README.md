@@ -12,6 +12,7 @@ to a `_cleanup` folder — **nothing is ever deleted automatically**.
 - **Real-time progress**: WebSocket-based live updates during pipeline execution
 - **AI reclassification from Review**: re-run AI vision on review photos with real-time progress bar, live stats, cancel support, and per-photo WebSocket updates — classify all or just selected photos
 - **Space analysis**: per-job breakdown by category, media type, and reason with recovery recommendations and charts
+- **AI Review Summary**: post-pipeline grouped summary of findings (dark photos, blurry, screenshots, etc.) with sample thumbnails — approve or reject entire categories with one click, files are moved immediately
 - **Manual review queue**: review uncertain classifications with thumbnail previews, lightbox, keyboard shortcuts, and batch actions
 - **WhatsApp detection**: identifies stickers, statuses, and forwarded media by filename and path patterns
 - **Auto-organize by date**: all photos organized into `YYYY/MM/` folders using EXIF date, filename patterns, or file modification time — respects existing subfolder names
@@ -104,6 +105,7 @@ Synology NAS (Docker)
     ├── Dashboard — configure and start jobs
     ├── Progress — real-time pipeline monitoring
     ├── Review — manual review queue + AI reclassification with live progress
+    ├── AI Summary — grouped classification results with batch approve/reject per category
     ├── History — past job results
     ├── Space Analysis — per-job storage breakdown and charts
     └── Providers — manage AI providers

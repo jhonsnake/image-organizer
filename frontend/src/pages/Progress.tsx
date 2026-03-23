@@ -1,5 +1,6 @@
 import { useState, useEffect, useMemo } from 'react';
-import { Pause, Play, Square, Loader2, CheckCircle2, XCircle, AlertTriangle } from 'lucide-react';
+import { useNavigate } from 'react-router-dom';
+import { Pause, Play, Square, Loader2, CheckCircle2, XCircle, AlertTriangle, Sparkles } from 'lucide-react';
 import { PieChart, Pie, Cell, BarChart, Bar, XAxis, YAxis, Tooltip, ResponsiveContainer } from 'recharts';
 import { api, reasonLabel } from '../lib/api';
 import type { Job, JobStats } from '../lib/api';
@@ -47,6 +48,7 @@ interface Props {
 }
 
 export default function Progress({ latestMsg, messages }: Props) {
+  const navigate = useNavigate();
   const [activeJob, setActiveJob] = useState<Job | null>(null);
   const [stats, setStats] = useState<JobStats | null>(null);
   const [progress, setProgress] = useState({ stage: '', current: 0, total: 0, message: '' });
@@ -251,6 +253,14 @@ export default function Progress({ latestMsg, messages }: Props) {
         </div>
         <div className="flex items-center gap-3">
           <StatusBadge status={activeJob.status} />
+          {activeJob.status === 'completed' && (
+            <button
+              onClick={() => navigate(`/ai-summary/${activeJob.id}`)}
+              className="px-4 py-2 rounded-md bg-purple-600 text-white hover:bg-purple-500 text-sm flex items-center gap-2"
+            >
+              <Sparkles className="w-4 h-4" /> Ver Resumen IA
+            </button>
+          )}
           {isActive && (
             <>
               <button onClick={handlePauseResume} className="btn-secondary flex items-center gap-1.5">
