@@ -1,8 +1,8 @@
 import { useState, useEffect } from 'react';
 import { useParams, useNavigate } from 'react-router-dom';
 import {
-  ArrowLeft, Trash2, FileText, Eye, CheckCircle2, Sparkles, Loader2,
-  AlertTriangle, ChevronUp,
+  ArrowLeft, Trash2, FileText, ListChecks, CheckCircle2, Sparkles, Loader2,
+  AlertTriangle, Shield,
 } from 'lucide-react';
 import { api } from '../lib/api';
 import type { AiSummary, AiSummaryGroup } from '../lib/api';
@@ -28,8 +28,7 @@ export default function AiSummaryPage() {
   const [error, setError] = useState('');
   const [loading, setLoading] = useState(true);
   const [groupStates, setGroupStates] = useState<Record<string, 'pending' | 'executing' | 'done' | 'error'>>({});
-  const [expandedGroup, setExpandedGroup] = useState<string | null>(null);
-  const [confirmDialog, setConfirmDialog] = useState<{ reason: string; action: string; label: string; count: number } | null>(null);
+  const [confirmDialog, setConfirmDialog] = useState<{ reason: string; action: string; label: string; count: number; dangerous?: boolean } | null>(null);
   const [approvingAll, setApprovingAll] = useState(false);
 
   useEffect(() => {
@@ -70,6 +69,7 @@ export default function AiSummaryPage() {
     );
 
     for (const group of pending) {
+      // Skip keep groups — they don't need action
       if (group.suggested_action === 'keep') continue;
       await handleAction(group, group.suggested_action);
     }
@@ -84,7 +84,9 @@ export default function AiSummaryPage() {
       keep: `Conservar ${group.count} archivos`,
       review: `Enviar ${group.count} archivos a revisión manual`,
     };
-    setConfirmDialog({ reason: group.reason, action, label: labels[action] || action, count: group.count });
+    // Dangerous if trying to trash photos that are classified as keep/photo
+    const dangerous = action === 'trash' && group.suggested_action === 'keep';
+    setConfirmDialog({ reason: group.reason, action, label: labels[action] || action, count: group.count, dangerous });
   };
 
   if (loading) {
@@ -140,7 +142,6 @@ export default function AiSummaryPage() {
       <div className="space-y-3">
         {data.groups.map((group) => {
           const state = groupStates[group.reason] || 'pending';
-          const isExpanded = expandedGroup === group.reason;
 
           return (
             <div
@@ -190,14 +191,9 @@ export default function AiSummaryPage() {
                           </div>
                         ))}
                         {group.count > 5 && (
-                          <button
-                            onClick={() => setExpandedGroup(isExpanded ? null : group.reason)}
-                            className="w-16 h-16 rounded-md bg-gray-800 flex items-center justify-center text-gray-400 hover:text-gray-200 flex-shrink-0"
-                          >
-                            {isExpanded ? <ChevronUp className="w-4 h-4" /> : (
-                              <span className="text-xs">+{group.count - 5}</span>
-                            )}
-                          </button>
+                          <div className="w-16 h-16 rounded-md bg-gray-800 flex items-center justify-center text-gray-500 flex-shrink-0 text-xs">
+                            +{(group.count - 5).toLocaleString()}
+                          </div>
                         )}
                       </div>
                     )}
@@ -217,9 +213,9 @@ export default function AiSummaryPage() {
                             </button>
                             <button
                               onClick={() => showConfirm(group, 'keep')}
-                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm"
+                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm flex items-center gap-1.5"
                             >
-                              Conservar
+                              <Shield className="w-3.5 h-3.5" /> Conservar
                             </button>
                           </>
                         )}
@@ -233,9 +229,9 @@ export default function AiSummaryPage() {
                             </button>
                             <button
                               onClick={() => showConfirm(group, 'keep')}
-                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm"
+                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm flex items-center gap-1.5"
                             >
-                              Conservar
+                              <Shield className="w-3.5 h-3.5" /> Conservar
                             </button>
                           </>
                         )}
@@ -249,26 +245,25 @@ export default function AiSummaryPage() {
                             </button>
                             <button
                               onClick={() => showConfirm(group, 'keep')}
-                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm"
+                              className="px-3 py-1.5 rounded-md bg-green-500/20 text-green-300 hover:bg-green-500/30 text-sm flex items-center gap-1.5"
                             >
-                              Conservar
+                              <Shield className="w-3.5 h-3.5" /> Conservar
                             </button>
                           </>
                         )}
+                        {/* Keep groups: only show "Revisar" button, NO delete */}
                         {group.suggested_action === 'keep' && (
-                          <button
-                            onClick={() => showConfirm(group, 'trash')}
-                            className="px-3 py-1.5 rounded-md bg-red-500/20 text-red-300 hover:bg-red-500/30 text-sm flex items-center gap-1.5"
-                          >
-                            <Trash2 className="w-3.5 h-3.5" /> Borrar
-                          </button>
+                          <span className="px-3 py-1.5 rounded-md bg-green-500/10 text-green-400 text-sm flex items-center gap-1.5">
+                            <CheckCircle2 className="w-3.5 h-3.5" /> Protegido
+                          </span>
                         )}
+                        {/* Review button: send to manual review */}
                         <button
                           onClick={() => showConfirm(group, 'review')}
                           className="px-3 py-1.5 rounded-md bg-yellow-500/20 text-yellow-300 hover:bg-yellow-500/30 text-sm flex items-center gap-1.5"
-                          title="Enviar a revisión manual"
+                          title="Enviar a revisión manual para revisar uno por uno"
                         >
-                          <Eye className="w-3.5 h-3.5" />
+                          <ListChecks className="w-3.5 h-3.5" /> Revisar
                         </button>
                       </>
                     )}
@@ -324,14 +319,15 @@ export default function AiSummaryPage() {
           <div className="flex gap-3">
             <button
               onClick={() => navigate('/review')}
-              className="px-4 py-2 rounded-md bg-gray-800 text-gray-300 hover:bg-gray-700 text-sm"
+              className="px-4 py-2 rounded-md bg-gray-800 text-gray-300 hover:bg-gray-700 text-sm flex items-center gap-2"
             >
-              Ir a Review manual
+              <ListChecks className="w-4 h-4" /> Ir a Review manual
             </button>
             <button
               onClick={handleApproveAll}
               disabled={approvingAll}
               className="px-4 py-2 rounded-md bg-purple-600 text-white hover:bg-purple-500 text-sm flex items-center gap-2 disabled:opacity-50"
+              title="Ejecuta la sugerencia de la IA para todas las categorías pendientes (basura, documentos, etc). No afecta fotos personales."
             >
               {approvingAll ? (
                 <><Loader2 className="w-4 h-4 animate-spin" /> Procesando...</>
@@ -347,10 +343,27 @@ export default function AiSummaryPage() {
       {confirmDialog && (
         <div className="fixed inset-0 bg-black/60 flex items-center justify-center z-50">
           <div className="bg-gray-900 border border-gray-700 rounded-lg p-6 max-w-md w-full mx-4">
-            <h3 className="text-lg font-medium mb-2">Confirmar acción</h3>
+            <h3 className="text-lg font-medium mb-2">
+              {confirmDialog.dangerous ? (
+                <span className="flex items-center gap-2 text-red-400">
+                  <AlertTriangle className="w-5 h-5" /> Acción peligrosa
+                </span>
+              ) : (
+                'Confirmar acción'
+              )}
+            </h3>
             <p className="text-gray-400 text-sm mb-4">{confirmDialog.label}</p>
+            {confirmDialog.dangerous && (
+              <div className="bg-red-500/10 border border-red-500/30 rounded-md p-3 mb-4">
+                <p className="text-red-300 text-xs">
+                  La IA clasificó estos archivos como fotos personales legítimas.
+                  Borrarlos podría causar pérdida de fotos importantes.
+                  Se recomienda usar "Revisar" para verificar uno por uno.
+                </p>
+              </div>
+            )}
             <p className="text-xs text-gray-500 mb-6">
-              Esta acción afectará {confirmDialog.count} archivos.
+              Esta acción afectará {confirmDialog.count.toLocaleString()} archivos.
               {confirmDialog.action === 'trash' && ' Los archivos se moverán a _cleanup/trash/.'}
               {confirmDialog.action === 'documents' && ' Los archivos se moverán a la carpeta Documentos.'}
             </p>
@@ -373,7 +386,7 @@ export default function AiSummaryPage() {
                   'bg-yellow-600 hover:bg-yellow-500'
                 }`}
               >
-                Confirmar
+                {confirmDialog.dangerous ? 'Borrar de todas formas' : 'Confirmar'}
               </button>
             </div>
           </div>
